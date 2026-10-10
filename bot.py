@@ -8,7 +8,7 @@ from discord.ext import commands
 import requests
 import whois
 
-# Render Web Service için HTTP sunucusu
+# Render Web Service port desteği (24/7 Canlı tutma)
 app = Flask('')
 
 @app.route('/')
@@ -16,7 +16,6 @@ def home():
     return "NULLL- INTELLIGENCE Bot Aktif!"
 
 def run_web():
-    # Render'ın atadığı dinamik portu veya varsayılan 8080 portunu dinler
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -72,23 +71,28 @@ async def ip_lookup(ctx, ip_address: str):
     try:
         res = requests.get(IP_API_URL.format(ip=ip_address)).json()
         if res.get("status") == "success":
-            embed = discord.Embed(title="🌐 NULLL- NetScan & Maps", color=discord.Color.dark_theme())
-            embed.description = f"**IP Lookup:** `{ip_address}`"
+            # İlk fotoğraftaki tam başlık ve düzen
+            embed = discord.Embed(title="🌐 Corvex NetScan & Maps", color=discord.Color.dark_theme())
+            embed.description = f"**IP Lookup:** `{ip_address}`\n"
             
-            embed.add_field(name="Continent", value=str(res.get('continent', 'Bilinmiyor')), inline=True)
+            # 1. Satır: Continent, Country, Region
+            embed.add_field(name="Continent", value=str(res.get('continent', 'N/A')), inline=True)
             embed.add_field(name="Country", value=f"{res.get('country')} ({res.get('countryCode')})", inline=True)
-            embed.add_field(name="Region", value=str(res.get('regionName', 'Bilinmiyor')), inline=True)
+            embed.add_field(name="Region", value=str(res.get('regionName', 'N/A')), inline=True)
             
-            embed.add_field(name="City", value=str(res.get('city', 'Bilinmiyor')), inline=True)
-            embed.add_field(name="Zip Code", value=str(res.get('zip', 'Bilinmiyor')), inline=True)
-            embed.add_field(name="Latitude", value=str(res.get('lat', 'Bilinmiyor')), inline=True)
+            # 2. Satır: City, Zip Code, Latitude
+            embed.add_field(name="City", value=str(res.get('city', 'N/A')), inline=True)
+            embed.add_field(name="Zip Code", value=str(res.get('zip', 'N/A')), inline=True)
+            embed.add_field(name="Latitude", value=str(res.get('lat', 'N/A')), inline=True)
             
-            embed.add_field(name="Longitude", value=str(res.get('lon', 'Bilinmiyor')), inline=True)
-            embed.add_field(name="Timezone", value=str(res.get('timezone', 'Bilinmiyor')), inline=True)
-            embed.add_field(name="ISP", value=str(res.get('isp', 'Bilinmiyor')), inline=True)
+            # 3. Satır: Longitude, Timezone, ISP
+            embed.add_field(name="Longitude", value=str(res.get('lon', 'N/A')), inline=True)
+            embed.add_field(name="Timezone", value=str(res.get('timezone', 'N/A')), inline=True)
+            embed.add_field(name="ISP", value=str(res.get('isp', 'N/A')), inline=True)
             
-            embed.add_field(name="AS Number", value=str(res.get('as', 'Bilinmiyor')), inline=False)
-            embed.add_field(name="Organization", value=str(res.get('org', 'Bilinmiyor')), inline=False)
+            # Detaylı Alt Bilgiler
+            embed.add_field(name="AS Number", value=str(res.get('as', 'N/A')), inline=False)
+            embed.add_field(name="Organization", value=str(res.get('org', 'N/A')), inline=False)
             embed.add_field(name="Proxy/VPN", value="Yes" if res.get('proxy') else "No", inline=False)
             
             lat, lon = res.get("lat"), res.get("lon")
@@ -148,13 +152,4 @@ async def domain_lookup(ctx, domain_name: str):
         await ctx.respond(f"Hata: {e}", ephemeral=True)
 
 
-@bot.slash_command(name="url-analiz", description="NULLL- INTELLIGENCE - URL Analiz")
-async def url_analysis(ctx, target_url: str):
-    await ctx.defer()
-    if not target_url.startswith("http"):
-        target_url = "https://" + target_url
-    try:
-        res = requests.get(target_url, timeout=5)
-        embed = discord.Embed(title="🔍 NULLL- URL Intelligence")
-        embed.add_field(name="Durum Kodu", value=str(res.status_code), inline=True)
-        await ctx.respond
+@bot.slash_command(name="url-analiz", description
