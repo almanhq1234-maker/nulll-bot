@@ -8,18 +8,19 @@ from discord.ext import commands
 import requests
 import whois
 
+# Flask Web Sunucusu (Render Port Bağlantısı İçin)
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "NULLL- INTELLIGENCE Bot Aktif!"
+    return "NULLL- INTELLIGENCE Bot 24/7 Aktif!"
 
-def run_web():
+def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    t = Thread(target=run_web)
+    t = Thread(target=run_flask, daemon=True)  # daemon=True ekleyerek ana sürecin durmasını engelliyoruz
     t.start()
 
 intents = discord.Intents.default()
@@ -33,7 +34,7 @@ BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 IP_API_URL = "http://ip-api.com/json/{ip}?fields=status,message,continent,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,proxy"
 EMAIL_API_URL = "https://api.xposedornot.com/v1/check-email/{email}"
 
-DARK_COLOR = discord.Color.from_rgb(47, 49, 54) # Koyu şık arka plan rengi
+DARK_COLOR = discord.Color.from_rgb(47, 49, 54)
 
 @bot.event
 async def on_ready():
@@ -127,52 +128,4 @@ async def email_leak(ctx, email: str):
         )
         
         if leaks:
-            embed.add_field(name="⚠️ Sızıntı Durumu", value="`Sızıntı Tespit Edildi!`", inline=False)
-            embed.add_field(
-                name="📂 Tespit Edilen Kaynaklar", 
-                value="```text\n" + "\n".join([f"• {l}" for l in leaks[:10]]) + "\n```", 
-                inline=False
-            )
-        else:
-            embed.add_field(name="✅ Sızıntı Durumu", value="`Veri sızıntısı bulunamadı, e-posta temiz.`", inline=False)
-
-        embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
-        await ctx.respond(embed=embed)
-    except Exception as e:
-        await ctx.respond(f"❌ **Hata:** `{e}`", ephemeral=True)
-
-@bot.slash_command(name="username", description="NULLL- INTELLIGENCE - Kullanıcı Adı Sosyal Medya Taraması")
-async def username_check(ctx, username: str):
-    await ctx.defer()
-    
-    platforms = {
-        "GitHub": f"https://github.com/{username}",
-        "Instagram": f"https://www.instagram.com/{username}/",
-        "Twitter / X": f"https://x.com/{username}",
-        "Reddit": f"https://www.reddit.com/user/{username}/",
-        "Pinterest": f"https://www.pinterest.com/{username}/",
-        "Telegram": f"https://t.me/{username}",
-        "TikTok": f"https://www.tiktok.com/@{username}",
-        "Steam": f"https://steamcommunity.com/id/{username}",
-        "Twitch": f"https://www.twitch.tv/{username}"
-    }
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-    }
-
-    found = []
-    
-    for name, url in platforms.items():
-        try:
-            r = requests.get(url, headers=headers, timeout=3, allow_redirects=True)
-            if r.status_code == 200:
-                found.append(f"🟢 [{name}]({url})")
-        except:
-            continue
-
-    embed = discord.Embed(
-        title="🔍 `NULLL- INTELLIGENCE` | WhatsMyName OSINT", 
-        description=f"> **Hedef Kullanıcı Adı:** `{username}`",
-        color=DARK_COLOR
-    )
+            embed.add_field(name
