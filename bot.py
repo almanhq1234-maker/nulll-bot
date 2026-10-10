@@ -38,7 +38,12 @@ async def on_ready():
     print("-----------------------------------------")
     print(f"NULLL- INTELLIGENCE Aktif: {bot.user.name}")
     print(f"ID: {bot.user.id}")
-    print("Komutlar aktif!")
+    try:
+        # Komutları Discord sunucularına anında kaydeder
+        await bot.sync_commands()
+        print("Komutlar Discord'a başarıyla senkronize edildi!")
+    except Exception as e:
+        print(f"Senkronizasyon hatası: {e}")
     print("-----------------------------------------")
 
 @bot.slash_command(name="ara", description="NULLL- INTELLIGENCE - Kimlik Denetimi")
@@ -112,57 +117,4 @@ async def email_leak(ctx, email: str):
         embed = discord.Embed(title="📧 NULLL- Leak Intelligence")
         if leaks:
             embed.color = discord.Color.red()
-            embed.add_field(name="Durum", value="Sızıntı Tespit Edildi!", inline=False)
-            embed.add_field(name="Kaynaklar", value="\n".join([f"• {l}" for l in leaks[:10]]), inline=False)
-        else:
-            embed.color = discord.Color.green()
-            embed.add_field(name="Durum", value="Temiz kayıt.", inline=False)
-
-        await ctx.respond(embed=embed)
-    except Exception as e:
-        await ctx.respond(f"Hata: {e}", ephemeral=True)
-
-@bot.slash_command(name="username", description="NULLL- INTELLIGENCE - Kullanıcı Adı Tarama")
-async def username_check(ctx, username: str):
-    await ctx.defer()
-    embed = discord.Embed(title="🔍 NULLL- WhatsMyName", description=f"Aranıyor: {username}")
-    await ctx.respond(embed=embed)
-
-@bot.slash_command(name="domain-sorgu", description="NULLL- INTELLIGENCE - Domain Whois")
-async def domain_lookup(ctx, domain_name: str):
-    await ctx.defer()
-    try:
-        w = whois.whois(domain_name)
-        embed = discord.Embed(title="🌐 NULLL- Domain Intelligence")
-        embed.add_field(name="Kayıt", value=str(w.registrar or "Bilinmiyor"), inline=False)
-        await ctx.respond(embed=embed)
-    except Exception as e:
-        await ctx.respond(f"Hata: {e}", ephemeral=True)
-
-@bot.slash_command(name="url-analiz", description="NULLL- INTELLIGENCE - URL Analiz")
-async def url_analysis(ctx, target_url: str):
-    await ctx.defer()
-    if not target_url.startswith("http"):
-        target_url = "https://" + target_url
-    try:
-        res = requests.get(target_url, timeout=5)
-        embed = discord.Embed(title="🔍 NULLL- URL Intelligence")
-        embed.add_field(name="Durum Kodu", value=str(res.status_code), inline=True)
-        await ctx.respond(embed=embed)
-    except Exception as e:
-        await ctx.respond(f"Bağlantı hatası: {e}", ephemeral=True)
-
-@bot.slash_command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres Harita")
-async def adres_sorgu(ctx, adres: str):
-    await ctx.defer()
-    maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(adres)}"
-    embed = discord.Embed(title="📍 NULLL- Address Intelligence")
-    embed.add_field(name="Harita", value=f"[Google Maps'te Gör]({maps_url})", inline=False)
-    await ctx.respond(embed=embed)
-
-if __name__ == "__main__":
-    if not BOT_TOKEN:
-        print("HATA: DISCORD_TOKEN çevre değişkeni bulunamadı!")
-    else:
-        keep_alive()
-        bot.run(BOT_TOKEN)
+            embed.add_field(name="Durum", value="Sızıntı Tespit Edildi
