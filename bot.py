@@ -8,7 +8,6 @@ from discord.ext import commands
 import requests
 import whois
 
-# Render Web Service port desteği (24/7 Canlı tutma)
 app = Flask('')
 
 @app.route('/')
@@ -34,7 +33,6 @@ BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 IP_API_URL = "http://ip-api.com/json/{ip}?fields=status,message,continent,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,proxy"
 EMAIL_API_URL = "https://api.xposedornot.com/v1/check-email/{email}"
 
-
 @bot.event
 async def on_ready():
     print("-----------------------------------------")
@@ -42,7 +40,6 @@ async def on_ready():
     print(f"ID: {bot.user.id}")
     print("Komutlar aktif!")
     print("-----------------------------------------")
-
 
 @bot.slash_command(name="ara", description="NULLL- INTELLIGENCE - Kimlik Denetimi")
 async def ara(ctx, user_id: str):
@@ -64,33 +61,27 @@ async def ara(ctx, user_id: str):
     except Exception as e:
         await ctx.respond(f"Hata oluştu: {e}", ephemeral=True)
 
-
 @bot.slash_command(name="ip-lookup", description="NULLL- INTELLIGENCE - Detaylı IP ve Harita Sorgulama")
 async def ip_lookup(ctx, ip_address: str):
     await ctx.defer()
     try:
         res = requests.get(IP_API_URL.format(ip=ip_address)).json()
         if res.get("status") == "success":
-            # İlk fotoğraftaki tam başlık ve düzen
             embed = discord.Embed(title="🌐 Corvex NetScan & Maps", color=discord.Color.dark_theme())
             embed.description = f"**IP Lookup:** `{ip_address}`\n"
             
-            # 1. Satır: Continent, Country, Region
             embed.add_field(name="Continent", value=str(res.get('continent', 'N/A')), inline=True)
             embed.add_field(name="Country", value=f"{res.get('country')} ({res.get('countryCode')})", inline=True)
             embed.add_field(name="Region", value=str(res.get('regionName', 'N/A')), inline=True)
             
-            # 2. Satır: City, Zip Code, Latitude
             embed.add_field(name="City", value=str(res.get('city', 'N/A')), inline=True)
             embed.add_field(name="Zip Code", value=str(res.get('zip', 'N/A')), inline=True)
             embed.add_field(name="Latitude", value=str(res.get('lat', 'N/A')), inline=True)
             
-            # 3. Satır: Longitude, Timezone, ISP
             embed.add_field(name="Longitude", value=str(res.get('lon', 'N/A')), inline=True)
             embed.add_field(name="Timezone", value=str(res.get('timezone', 'N/A')), inline=True)
             embed.add_field(name="ISP", value=str(res.get('isp', 'N/A')), inline=True)
             
-            # Detaylı Alt Bilgiler
             embed.add_field(name="AS Number", value=str(res.get('as', 'N/A')), inline=False)
             embed.add_field(name="Organization", value=str(res.get('org', 'N/A')), inline=False)
             embed.add_field(name="Proxy/VPN", value="Yes" if res.get('proxy') else "No", inline=False)
@@ -106,7 +97,6 @@ async def ip_lookup(ctx, ip_address: str):
             await ctx.respond("Geçersiz IP adresi!", ephemeral=True)
     except Exception as e:
         await ctx.respond(f"Hata: {e}", ephemeral=True)
-
 
 @bot.slash_command(name="email-sızıntı", description="NULLL- INTELLIGENCE - Email Sızıntı Kontrolü")
 async def email_leak(ctx, email: str):
@@ -132,13 +122,11 @@ async def email_leak(ctx, email: str):
     except Exception as e:
         await ctx.respond(f"Hata: {e}", ephemeral=True)
 
-
 @bot.slash_command(name="username", description="NULLL- INTELLIGENCE - Kullanıcı Adı Tarama")
 async def username_check(ctx, username: str):
     await ctx.defer()
     embed = discord.Embed(title="🔍 NULLL- WhatsMyName", description=f"Aranıyor: {username}")
     await ctx.respond(embed=embed)
-
 
 @bot.slash_command(name="domain-sorgu", description="NULLL- INTELLIGENCE - Domain Whois")
 async def domain_lookup(ctx, domain_name: str):
@@ -151,5 +139,30 @@ async def domain_lookup(ctx, domain_name: str):
     except Exception as e:
         await ctx.respond(f"Hata: {e}", ephemeral=True)
 
+@bot.slash_command(name="url-analiz", description="NULLL- INTELLIGENCE - URL Analiz")
+async def url_analysis(ctx, target_url: str):
+    await ctx.defer()
+    if not target_url.startswith("http"):
+        target_url = "https://" + target_url
+    try:
+        res = requests.get(target_url, timeout=5)
+        embed = discord.Embed(title="🔍 NULLL- URL Intelligence")
+        embed.add_field(name="Durum Kodu", value=str(res.status_code), inline=True)
+        await ctx.respond(embed=embed)
+    except Exception as e:
+        await ctx.respond(f"Bağlantı hatası: {e}", ephemeral=True)
 
-@bot.slash_command(name="url-analiz", description
+@bot.slash_command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres Harita")
+async def adres_sorgu(ctx, adres: str):
+    await ctx.defer()
+    maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(adres)}"
+    embed = discord.Embed(title="📍 NULLL- Address Intelligence")
+    embed.add_field(name="Harita", value=f"[Google Maps'te Gör]({maps_url})", inline=False)
+    await ctx.respond(embed=embed)
+
+if __name__ == "__main__":
+    if not BOT_TOKEN:
+        print("HATA: DISCORD_TOKEN çevre değişkeni bulunamadı!")
+    else:
+        keep_alive()
+        bot.run(BOT_TOKEN)
