@@ -8,7 +8,7 @@ from discord.ext import commands
 import requests
 import whois
 
-# Render Web Service port desteği
+# Render Web Service için HTTP sunucusu
 app = Flask('')
 
 @app.route('/')
@@ -16,7 +16,9 @@ def home():
     return "NULLL- INTELLIGENCE Bot Aktif!"
 
 def run_web():
-    app.run(host='0.0.0.0', port=8080)
+    # Render'ın atadığı dinamik portu veya varsayılan 8080 portunu dinler
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     t = Thread(target=run_web)
@@ -73,7 +75,6 @@ async def ip_lookup(ctx, ip_address: str):
             embed = discord.Embed(title="🌐 NULLL- NetScan & Maps", color=discord.Color.dark_theme())
             embed.description = f"**IP Lookup:** `{ip_address}`"
             
-            # Üst görseldeki tüm zengin detaylar
             embed.add_field(name="Continent", value=str(res.get('continent', 'Bilinmiyor')), inline=True)
             embed.add_field(name="Country", value=f"{res.get('country')} ({res.get('countryCode')})", inline=True)
             embed.add_field(name="Region", value=str(res.get('regionName', 'Bilinmiyor')), inline=True)
@@ -156,23 +157,4 @@ async def url_analysis(ctx, target_url: str):
         res = requests.get(target_url, timeout=5)
         embed = discord.Embed(title="🔍 NULLL- URL Intelligence")
         embed.add_field(name="Durum Kodu", value=str(res.status_code), inline=True)
-        await ctx.respond(embed=embed)
-    except Exception as e:
-        await ctx.respond(f"Bağlantı hatası: {e}", ephemeral=True)
-
-
-@bot.slash_command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres Harita")
-async def adres_sorgu(ctx, adres: str):
-    await ctx.defer()
-    maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(adres)}"
-    embed = discord.Embed(title="📍 NULLL- Address Intelligence")
-    embed.add_field(name="Harita", value=f"[Google Maps'te Gör]({maps_url})", inline=False)
-    await ctx.respond(embed=embed)
-
-
-if __name__ == "__main__":
-    if not BOT_TOKEN:
-        print("HATA: DISCORD_TOKEN çevre değişkeni bulunamadı!")
-    else:
-        keep_alive()
-        bot.run(BOT_TOKEN)
+        await ctx.respond
