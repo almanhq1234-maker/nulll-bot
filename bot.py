@@ -1,10 +1,26 @@
 import datetime
 import os
 import urllib.parse
+from threading import Thread
+from flask import Flask
 import discord
 from discord.ext import commands
 import requests
 import whois
+
+# Render Web Service port desteği
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "NULLL- INTELLIGENCE Bot Aktif!"
+
+def run_web():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.start()
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -16,7 +32,6 @@ BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 
 IP_API_URL = "http://ip-api.com/json/{ip}?fields=status,message,continent,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,proxy"
 EMAIL_API_URL = "https://api.xposedornot.com/v1/check-email/{email}"
-WHATSMYNAME_URL = "https://raw.githubusercontent.com/WebBreacher/WhatsMyName/main/wmn-data.json"
 
 
 @bot.event
@@ -49,21 +64,36 @@ async def ara(ctx, user_id: str):
         await ctx.respond(f"Hata oluştu: {e}", ephemeral=True)
 
 
-@bot.slash_command(name="ip-lookup", description="NULLL- INTELLIGENCE - IP ve Harita Sorgulama")
+@bot.slash_command(name="ip-lookup", description="NULLL- INTELLIGENCE - Detaylı IP ve Harita Sorgulama")
 async def ip_lookup(ctx, ip_address: str):
     await ctx.defer()
     try:
         res = requests.get(IP_API_URL.format(ip=ip_address)).json()
         if res.get("status") == "success":
             embed = discord.Embed(title="🌐 NULLL- NetScan & Maps", color=discord.Color.dark_theme())
-            embed.add_field(name="Ülke", value=f"{res.get('country')} ({res.get('countryCode')})", inline=True)
-            embed.add_field(name="Şehir", value=str(res.get('city')), inline=True)
-            embed.add_field(name="ISS", value=str(res.get('isp')), inline=True)
+            embed.description = f"**IP Lookup:** `{ip_address}`"
+            
+            # Üst görseldeki tüm zengin detaylar
+            embed.add_field(name="Continent", value=str(res.get('continent', 'Bilinmiyor')), inline=True)
+            embed.add_field(name="Country", value=f"{res.get('country')} ({res.get('countryCode')})", inline=True)
+            embed.add_field(name="Region", value=str(res.get('regionName', 'Bilinmiyor')), inline=True)
+            
+            embed.add_field(name="City", value=str(res.get('city', 'Bilinmiyor')), inline=True)
+            embed.add_field(name="Zip Code", value=str(res.get('zip', 'Bilinmiyor')), inline=True)
+            embed.add_field(name="Latitude", value=str(res.get('lat', 'Bilinmiyor')), inline=True)
+            
+            embed.add_field(name="Longitude", value=str(res.get('lon', 'Bilinmiyor')), inline=True)
+            embed.add_field(name="Timezone", value=str(res.get('timezone', 'Bilinmiyor')), inline=True)
+            embed.add_field(name="ISP", value=str(res.get('isp', 'Bilinmiyor')), inline=True)
+            
+            embed.add_field(name="AS Number", value=str(res.get('as', 'Bilinmiyor')), inline=False)
+            embed.add_field(name="Organization", value=str(res.get('org', 'Bilinmiyor')), inline=False)
+            embed.add_field(name="Proxy/VPN", value="Yes" if res.get('proxy') else "No", inline=False)
             
             lat, lon = res.get("lat"), res.get("lon")
             if lat and lon:
                 maps_url = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-                embed.add_field(name="Harita", value=f"[Google Maps'te Aç]({maps_url})", inline=False)
+                embed.add_field(name="🗺️ Konum Haritası", value=f"[Google Maps'te Aç]({maps_url})", inline=False)
 
             embed.set_footer(text=f"Sorgulayan: {ctx.author.name}")
             await ctx.respond(embed=embed)
@@ -144,4 +174,5 @@ if __name__ == "__main__":
     if not BOT_TOKEN:
         print("HATA: DISCORD_TOKEN çevre değişkeni bulunamadı!")
     else:
+        keep_alive()
         bot.run(BOT_TOKEN)
