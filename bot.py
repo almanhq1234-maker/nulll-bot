@@ -35,7 +35,6 @@ EMAIL_API_URL = "https://api.xposedornot.com/v1/check-email/{email}"
 
 DARK_COLOR = discord.Color.from_rgb(47, 49, 54)
 
-# Komutların DM'lerde ve Sunucularda Kullanılmasını Sağlayan Entegrasyon Ayarları
 USER_INSTALL_CONFIG = {
     "integration_types": {
         discord.IntegrationType.user_install,
@@ -208,4 +207,45 @@ async def domain_lookup(ctx, domain_name: str):
         embed.add_field(name="📝 Kayıt Sağlayıcısı (Registrar)", value=f"```text\n{str(w.registrar or 'Bilinmiyor')}\n```", inline=False)
         embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
         await ctx.respond(embed=embed)
-    except Exception
+    except Exception as e:
+        await ctx.respond(f"❌ **Hata:** `{e}`", ephemeral=True)
+
+@bot.slash_command(name="url-analiz", description="NULLL- INTELLIGENCE - URL Analiz", **USER_INSTALL_CONFIG)
+async def url_analysis(ctx, target_url: str):
+    await ctx.defer()
+    if not target_url.startswith("http"):
+        target_url = "https://" + target_url
+    try:
+        res = requests.get(target_url, timeout=5)
+        embed = discord.Embed(
+            title="🔍 `NULLL- INTELLIGENCE` | Web URL Bağlantı Analizi", 
+            description=f"> **Hedef URL:** `{target_url}`",
+            color=DARK_COLOR
+        )
+        embed.add_field(name="📡 HTTP Durum Kodu", value=f"`{res.status_code}`", inline=True)
+        embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+        await ctx.respond(embed=embed)
+    except Exception as e:
+        await ctx.respond(f"❌ **Bağlantı Hatası:** `{e}`", ephemeral=True)
+
+@bot.slash_command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres Harita Sorgulama", **USER_INSTALL_CONFIG)
+async def adres_sorgu(ctx, adres: str):
+    await ctx.defer()
+    maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(adres)}"
+    
+    embed = discord.Embed(
+        title="📍 `NULLL- INTELLIGENCE` | Adres & Harita Sorgu", 
+        color=DARK_COLOR
+    )
+    embed.add_field(name="🏢 Aranan Adres", value=f"```text\n{adres}\n```", inline=False)
+    embed.add_field(name="🗺️ Harita Bağlantısı", value=f"[Google Maps üzerinde Aç ↗]({maps_url})", inline=False)
+    embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+    
+    await ctx.respond(embed=embed)
+
+if __name__ == "__main__":
+    if not BOT_TOKEN:
+        print("HATA: DISCORD_TOKEN çevre değişkeni bulunamadı!")
+    else:
+        keep_alive()
+        bot.run(BOT_TOKEN)
