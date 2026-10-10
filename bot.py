@@ -1,4 +1,5 @@
 import datetime
+import os
 import urllib.parse
 import discord
 from discord.ext import commands
@@ -11,7 +12,9 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-BOT_TOKEN = "MTU1ODU2MDk3MzEwNTkyNjIyNA.GZgJ5X.XCo2ykZjxcMgHmCjyG2TaRGGEEtxIor5pXEA5w"
+# Token'ı doğrudan yazmak yerine Render Environment Variables'dan güvenle çekiyoruz:
+BOT_TOKEN = os.getenv("DISCORD_TOKEN")
+
 IP_API_URL = "http://ip-api.com/json/{ip}?fields=status,message,continent,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,proxy"
 EMAIL_API_URL = "https://api.xposedornot.com/v1/check-email/{email}"
 WHATSMYNAME_URL = "https://raw.githubusercontent.com/WebBreacher/WhatsMyName/main/wmn-data.json"
@@ -121,22 +124,4 @@ async def url_analysis(ctx, target_url: str):
     if not target_url.startswith("http"):
         target_url = "https://" + target_url
     try:
-        res = requests.get(target_url, timeout=5)
-        embed = discord.Embed(title="🔍 NULLL- URL Intelligence")
-        embed.add_field(name="Durum Kodu", value=str(res.status_code), inline=True)
-        await ctx.respond(embed=embed)
-    except Exception as e:
-        await ctx.respond(f"Bağlantı hatası: {e}", ephemeral=True)
-
-
-@bot.slash_command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres Harita")
-async def adres_sorgu(ctx, adres: str):
-    await ctx.defer()
-    maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(adres)}"
-    embed = discord.Embed(title="📍 NULLL- Address Intelligence")
-    embed.add_field(name="Harita", value=f"[Google Maps'te Gör]({maps_url})", inline=False)
-    await ctx.respond(embed=embed)
-
-
-if __name__ == "__main__":
-    bot.run(BOT_TOKEN)
+        res = requests.get(target_url, timeout
