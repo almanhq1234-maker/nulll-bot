@@ -1,21 +1,52 @@
-import os
+# =====================================================================
+# Hackcheck - Data breach searching Discord Bot - by RocketGod
+# Render 24/7 Keep-Alive Entegrasyonu ile
+# =====================================================================
+
+import asyncio
+import json
+import logging
+from logging.handlers import RotatingFileHandler
 import sys
-import importlib
-import datetime
-import threading
+import os
+import io
+import traceback
+import re
+from datetime import datetime
+from xml.sax.saxutils import escape
 from threading import Thread
 from flask import Flask
+
 import discord
-from discord import app_commands
-from discord.ext import commands
+from discord.ui import Modal, TextInput
+from discord.ui import Button, View
+from discord import ButtonStyle
+
+import aiohttp
+from aiohttp import ClientTimeout, ClientError, ClientResponseError, ServerTimeoutError
 import requests
 
-# Flask 24/7 Uptime Sunucusu (Render için)
+from aiolimiter import AsyncLimiter
+limiter = AsyncLimiter(8, 1)
+
+from reportlab.lib.pagesizes import elevenSeventeen, landscape
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_LEFT
+import csv
+import ast 
+
+from datetime import datetime, timedelta
+
+# ---------------------------------------------------------------------
+# Flask 24/7 Uptime Sunucusu (Render İçin)
+# ---------------------------------------------------------------------
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "NULLL-INTELLIGENCE x WhoCord Framework Tam Kapasite Aktif!", 200
+    return "Hackcheck Discord Bot 24/7 Aktif!", 200
 
 @app.route('/health')
 def health():
@@ -29,214 +60,515 @@ def keep_alive():
     t = Thread(target=run_flask, daemon=True)
     t.start()
 
-# Dinamik Modül Yükleyici (Tüm alt klasörleri ve modülleri tarar)
-LOADED_MODULES = {}
-current_dir = os.path.dirname(os.path.abspath(__file__))
+# ---------------------------------------------------------------------
+# Logging Konfigürasyonu
+# ---------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(), 
+        RotatingFileHandler('hackcheck.log', maxBytes=5*1024*1024, backupCount=2, encoding='utf-8', mode='a')  
+    ]
+)
+logging.getLogger('discord').setLevel(logging.WARNING)
 
-for root, dirs, files in os.walk(current_dir):
-    for file in files:
-        if file.endswith(".py") and file != "bot.py":
-            mod_name = file[:-3]
+timeout = ClientTimeout(total=120)
+retry_attempts = 3
+backoff_factor = 0.5
+
+
+def load_config():
+    try:
+        if os.path.exists("config.json"):
+            with open("config.json", "r") as config_file:
+                return json.load(config_file)
+        else:
+            # Çevre değişkenlerinden okuma seçeneği (Render için kolaylık)
+            return {
+                "discord_token": os.getenv("DISCORD_TOKEN", ""),
+                "hackcheck_api_key": os.getenv("HACKCHECK_API_KEY", ""),
+                "webhook_url": os.getenv("WEBHOOK_URL", "")
+            }
+    except Exception as e:
+        logging.critical(f"Config yükleme hatası: {e}")
+        raise
+
+
+config = load_config()
+
+
+def validate_email(email):
+    pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+    return re.match(pattern, email) is not None
+
+
+def prepare_data_for_csv(results):
+    prepared_data = []
+    for result in results:
+        row = {key: value for key, value in result.items() if key != 'source'}
+        source_info = result.get('source', {})
+        source_name = source_info.get('name', 'Unknown source')
+        source_date = source_info.get('date', 'No date provided')
+        row['source'] = f"Name: {source_name}, Date: {source_date}"
+        prepared_data.append(row)
+    return prepared_data
+
+
+def create_csv_file(data, filename_prefix="results"):
+    if not data:  
+        return None
+
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    filename = f"{filename_prefix}_{timestamp}.csv"
+
+    keys = data[0].keys()
+    with open(filename, 'w', newline='', encoding='utf-8') as output_file:
+        dict_writer = csv.DictWriter(output_file, keys)
+        dict_writer.writeheader()
+        dict_writer.writerows(data)
+
+    return filename
+
+
+def create_pdf_from_csv(csv_filename, filename_prefix="results"):
+    timestamp = csv_filename.split('_')[-1].split('.')[0]
+    pdf_filename = f"{filename_prefix}_{timestamp}.pdf"
+
+    with open(csv_filename, newline='', encoding='utf-8') as csvfile:
+        reader = csv.reader(csvfile)
+        data = [list(row) for row in reader]
+
+    readable_style = ParagraphStyle(
+        name='Readable',
+        fontName='Times-Roman',  
+        fontSize=10,
+        leading=12,  
+        alignment=TA_LEFT,
+    )
+
+    styles = getSampleStyleSheet()
+    styleNormal = styles['Normal']
+    styleNormal.wordWrap = 'CJK'  
+
+    for i, row in enumerate(data):
+        for j, cell in enumerate(row):
+            if j == len(row) - 1:
+                try:
+                    source_dict = ast.literal_eval(cell)
+                    source_str = f"{source_dict.get('name', 'N/A')}: {source_dict.get('date', 'No date')}"
+                    data[i][j] = Paragraph(escape(source_str), readable_style)
+                except (ValueError, SyntaxError):
+                    data[i][j] = Paragraph(escape(cell), readable_style)
+            else:
+                data[i][j] = Paragraph(escape(cell), readable_style)
+
+    pdf = SimpleDocTemplate(pdf_filename, pagesize=landscape(elevenSeventeen))
+
+    usable_width = landscape(elevenSeventeen)[0] - 2 * 72  
+    column_widths = [usable_width * 0.19,  
+                     usable_width * 0.10,  
+                     usable_width * 0.10,  
+                     usable_width * 0.10,  
+                     usable_width * 0.08,  
+                     usable_width * 0.08,  
+                     usable_width * 0.20,  
+                     usable_width * 0.15]  
+
+    table = Table(data, colWidths=column_widths, repeatRows=1)
+
+    style = TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.grey),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0,0), (-1,0), 12),
+        ('BACKGROUND', (0,1), (-1,-1), colors.beige),
+        ('GRID', (0,0), (-1,-1), 1, colors.black),
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ('LEFTPADDING', (0,0), (-1,-1), 3),
+        ('RIGHTPADDING', (0,0), (-1,-1), 3),
+    ])
+    table.setStyle(style)
+
+    elems = [table]
+    pdf.build(elems)
+
+    return pdf_filename
+
+
+class PaginatorView(discord.ui.View):
+    def __init__(self, data, term, search_type, page_size=4):
+        super().__init__()
+        self.data = data
+        self.term = term
+        self.search_type = search_type
+        self.page_size = page_size
+        self.current_page = 0
+        self.max_page = (len(self.data) - 1) // page_size
+        self.message = None
+
+        self.back_button = discord.ui.Button(label="Back", style=discord.ButtonStyle.primary, disabled=(self.current_page == 0))
+        self.next_button = discord.ui.Button(label="Next", style=discord.ButtonStyle.primary, disabled=(self.current_page >= self.max_page))
+        
+        self.add_item(self.back_button)
+        self.add_item(self.next_button)
+        self.back_button.callback = self.back_button_callback
+        self.next_button.callback = self.next_button_callback
+
+    async def back_button_callback(self, interaction: discord.Interaction):
+        if self.current_page > 0:
+            self.current_page -= 1
+        await self.update_buttons_and_message(interaction)
+
+    async def next_button_callback(self, interaction: discord.Interaction):
+        if self.current_page < self.max_page:
+            self.current_page += 1
+        await self.update_buttons_and_message(interaction)
+
+    async def update_buttons_and_message(self, interaction):
+        try:
+            self.back_button.disabled = self.current_page == 0
+            self.next_button.disabled = self.current_page >= self.max_page
+            await self.update_message(interaction)
+            await interaction.response.edit_message(view=self)
+        except discord.NotFound:
+            logging.error("Error: Message not found when trying to edit.")
+        except discord.HTTPException as e:
+            logging.error(f"HTTP error occurred: {e}")
+        except Exception as e:
+            logging.error(f"Unhandled exception: {e}")
+
+    async def update_message(self, interaction):
+        start = self.current_page * self.page_size
+        end = start + self.page_size
+        limited_results = {"results": self.data[start:end]}
+        content = format_breaches(self.term, self.search_type, limited_results)
+        try:
+            if self.message:
+                await self.message.edit(content=content, view=self)
+            else:
+                self.message = await interaction.followup.send(content=content, view=self)
+        except discord.NotFound:
+            logging.error("Error: Message not found when trying to send or edit.")
+        except discord.HTTPException as e:
+            logging.error(f"HTTP error while sending or editing message: {e}")
+        except Exception as e:
+            logging.error(f"Unhandled exception during message update: {e}")
+
+    async def on_timeout(self):
+        self.back_button.disabled = True
+        self.next_button.disabled = True
+        try:
+            if self.message:
+                await self.message.edit(view=self)
+        except discord.NotFound:
+            logging.error("Error: Message not found during timeout.")
+        except discord.HTTPException as e:
+            logging.error(f"HTTP error occurred during on_timeout: {e}")
+        except Exception as e:
+            logging.error(f"Unhandled exception during on_timeout: {e}")
+
+    def stop_paginator(self):
+        self.stop()
+
+
+async def make_hackcheck_request(search_type, term, max_pages=75):
+    api_key = config.get("hackcheck_api_key", "")
+    all_results = []
+    offset = 0
+    limit = 75  
+    page_count = 0
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        has_more_data = True
+
+        while has_more_data and page_count < max_pages:
+            async with limiter:
+                url = f"https://api.hackcheck.io/search/{api_key}/{search_type.replace(' ', '_')}/{term}?offset={offset}&limit={limit}"
+                try:
+                    async with session.get(url) as response:
+                        data = await response.json()  
+                        if response.status != 200:
+                            error_message = data.get('error', 'Unknown error')
+                            logging.error(f"API Error: {error_message}")
+                            logging.error(f"API Response: {data}")  
+                            return {"error": f"API Error: {error_message}"}
+
+                        all_results.extend(data.get("results", []))
+                        pagination_info = data.get('pagination', {})
+
+                        next_page = pagination_info.get('next')
+                        if next_page:
+                            offset = next_page['offset']
+                            limit = next_page['limit']
+                        else:
+                            has_more_data = False
+
+                        page_count += 1
+
+                except aiohttp.ClientError as e:
+                    logging.error(f"ClientError occurred: {e}")
+                except json.JSONDecodeError as e:
+                    logging.error(f"JSONDecodeError occurred: {e}")
+                except asyncio.TimeoutError as e:
+                    logging.error(f"TimeoutError occurred: {e}")
+                except Exception as e:
+                    logging.error(f"An unexpected error occurred: {type(e).__name__}: {e}")
+                    traceback_str = traceback.format_exc()  
+                    logging.error(f"Traceback: {traceback_str}")
+                    return {"error": "An unexpected error occurred during the API request."}
+
+    return {"results": all_results}
+
+
+def format_breaches(term, search_type, response):
+    header = f"{term}:\n\n"
+
+    if not response or "results" not in response or not response["results"]:
+        return f"No breaches found for {search_type} '{term}'."
+
+    breach_list = []
+    for breach in response["results"]:
+        details = []
+        source_info = breach.get("source", {})
+        source_name = source_info.get("name", "Unknown source")
+        date = source_info.get("date", "No date")  
+
+        details.append(f"- Source: {source_name} ({date})")  
+
+        for key in ["email", "password", "username", "full_name", "ip_address", "phone_number", "hash"]:
+            value = breach.get(key)
+            if value:
+                details.append(f"  {key.replace('_', ' ').capitalize()}: {value}")
+
+        breach_list.append('\n'.join(details))
+
+    return header + '\n\n'.join(breach_list)
+
+
+async def attempt_delete_with_retries(filename, max_attempts=5):
+    attempt = 0
+    while attempt < max_attempts:
+        try:
+            os.remove(filename)
+            return True  
+        except PermissionError as e:
+            logging.warning(f"PermissionError when trying to delete file {filename}. Retrying... Attempt {attempt + 1}/{max_attempts}")
+            await asyncio.sleep(1)  
+        except FileNotFoundError:
+            logging.warning(f"File {filename} not found. It may have already been deleted.")
+            return False  
+        except Exception as e:
+            logging.error(f"Failed to delete file {filename} on attempt {attempt + 1}: {e}")
+            break  
+        finally:
+            attempt += 1
+
+    logging.error(f"Could not delete file {filename} after {max_attempts} attempts.")
+    return False  
+
+
+class SearchModal(Modal):
+    def __init__(self, search_type, bot):
+        super().__init__(title=f"Search by {search_type.capitalize()}")
+        self.search_type = search_type
+        self.bot = bot
+        self.add_item(TextInput(label=f"Enter {search_type}", custom_id="search_term"))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        term = self.children[0].value
+        if interaction.guild:
+            guild_name = interaction.guild.name
+            channel_name = interaction.channel.name
+        else:
+            guild_name = "Direct Message"
+            channel_name = "Direct Message"
+
+        logging.info(f"{interaction.user} searched for '{term}' from '{channel_name}' at '{guild_name}'")
+
+        if self.search_type == "email" and not validate_email(term):
+            await interaction.response.send_message("The provided email is invalid. Please enter a valid email address.")
+            return
+
+        if config.get("webhook_url"):
+            asyncio.create_task(self.send_webhook_message(interaction.user, term, interaction, interaction.guild))
+            
+        await interaction.response.defer(ephemeral=False)
+        asyncio.create_task(self.process_search(interaction, term))
+        
+    async def process_search(self, interaction: discord.Interaction, term: str):
+        try:
+            await interaction.followup.send("Processing your search. Please wait...")
+
+            full_results = await make_hackcheck_request(self.search_type, term)
+            if "error" in full_results:
+                logging.error(full_results["error"])
+                await interaction.followup.send("An error occurred while processing your request. Please try again later.")
+                return
+
+            reversed_results = list(reversed(full_results["results"]))
+            paginator_view = PaginatorView(reversed_results, term, self.search_type)
+            self.paginator_view = paginator_view  
+            content = format_breaches(term, self.search_type, {"results": reversed_results[:paginator_view.page_size]})
+            message = await interaction.followup.send(content=content, view=paginator_view)
+            paginator_view.message = message
+
+            csv_filename, pdf_filename = await self.generate_reports(reversed_results)
+            if csv_filename and pdf_filename:
+                await self.send_reports(interaction, csv_filename, pdf_filename, term, interaction.user.display_name)
+
+        except Exception as e:
+            logging.error(f"An unexpected error occurred: {e}")
+            await interaction.followup.send("An unexpected error occurred. Please try again later.")
+
+    async def send_webhook_message(self, user, term, interaction, guild):
+        webhook_url = config.get("webhook_url")
+        if not webhook_url:
+            return
+        user_avatar_url = user.avatar.url if user.avatar else None
+        embed_content = self.construct_embed(user, term, guild, user_avatar_url)
+        webhook_data = {
+            "content": None,
+            "username": "HackCheck Bot",
+            "embeds": [embed_content],
+        }
+
+        async with aiohttp.ClientSession() as session:
             try:
-                sys.path.append(root)
-                LOADED_MODULES[mod_name] = importlib.import_module(mod_name)
-            except Exception:
-                pass
+                response = await session.post(webhook_url, json=webhook_data)
+                if response.status != 204:
+                    logging.error(f"Webhook failed with status code {response.status}")
+            except Exception as e:
+                logging.error(f"An error occurred while sending the webhook message: {e}")
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
+    def construct_embed(self, user, term, guild, avatar_url):
+        server_info = f"**Name:** {guild.name}\n**Members:** {guild.member_count}" if guild else "Direct Message"
+        return {
+            "title": "🔍 New Search Performed",
+            "description": f"**User:** {user}\n**Term:** `{term}`",
+            "color": 3447003,
+            "fields": [{"name": "Server or DM", "value": server_info, "inline": False}],
+            "thumbnail": {"url": avatar_url},
+            "footer": {"text": f"{user} initiated", "icon_url": avatar_url},
+            "timestamp": datetime.utcnow().isoformat()
+        }
 
-class NullBot(commands.Bot):
+    async def generate_reports(self, results):
+        try:
+            csv_filename = create_csv_file(results, "full_results")
+            pdf_filename = create_pdf_from_csv(csv_filename, "full_results") if csv_filename else None
+            return csv_filename, pdf_filename
+        except Exception as e:
+            logging.error(f"Error generating reports: {e}")
+            return None, None
+
+    async def send_reports(self, interaction, csv_filename, pdf_filename, term, username):
+        try:
+            if csv_filename:
+                await interaction.followup.send("Here's the full report in CSV format:", file=discord.File(csv_filename))
+            if pdf_filename:
+                await interaction.followup.send("Here's the full report in PDF format:", file=discord.File(pdf_filename))
+            await interaction.followup.send(f"Finished searching `{term}` for `{username}`")
+            await asyncio.gather(
+                attempt_delete_with_retries(csv_filename),
+                attempt_delete_with_retries(pdf_filename)
+            )
+        except Exception as e:
+            logging.error(f"Error sending reports: {e}")
+
+
+class SearchButton(Button):
+    def __init__(self, label, search_type, bot):
+        super().__init__(label=label, style=ButtonStyle.primary)
+        self.search_type = search_type
+        self.bot = bot
+
+    async def callback(self, interaction):
+        await self.view.disable_all_buttons()
+        modal = SearchModal(search_type=self.search_type, bot=self.bot)
+        await interaction.response.send_modal(modal)
+
+class SpacerButton(discord.ui.Button):
     def __init__(self):
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(style=discord.ButtonStyle.secondary, label="\u200b", disabled=True)
+
+class SearchTypeView(discord.ui.View):
+    def __init__(self, bot, timeout=30):
+        super().__init__(timeout=timeout)
+        self.bot = bot
+        self.add_buttons()
+
+    def add_buttons(self):
+        types = ["Email", "Password", "Username", "Full Name", "IP Address", "Phone Number", "Hash", "Domain"]
+        for i, t in enumerate(types):
+            if i > 0:
+                self.add_item(SpacerButton())
+            self.add_item(SearchButton(label=f"Search by {t}", search_type=t.lower(), bot=self.bot))
+
+    async def disable_all_buttons(self):
+        for item in self.children:
+            if isinstance(item, Button):
+                item.disabled = True
+        try:
+            await self.message.edit(view=self)  
+        except Exception as e:
+            print(f"Failed to update view: {str(e)}")
+
+    async def on_timeout(self):
+        await self.disable_all_buttons()
+
+
+@discord.app_commands.command(name="hackcheck", description="Search for data breaches.")
+async def check_breach_command(interaction: discord.Interaction):
+    view = SearchTypeView(interaction.client)
+    await interaction.response.send_message("Please select a search type:", view=view, ephemeral=True)
+    view.message = await interaction.original_response()
+
+
+class Bot(discord.Client):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tree = discord.app_commands.CommandTree(self)
+        self.discord_message_limit = 2000
 
     async def setup_hook(self):
+        self.tree.add_command(check_breach_command)
+
+    async def on_ready(self):
+        for guild in self.guilds:
+            try:
+                owner = await guild.fetch_member(guild.owner_id)
+                owner_name = f"{owner.name}#{owner.discriminator}"
+            except Exception as e:
+                logging.error(f"Could not fetch owner for guild: {guild.name}, error: {e}")
+                owner_name = "Could not fetch owner"
+            
+            logging.info(f" - {guild.name} (Owner: {owner_name})")
+
+        server_count = len(self.guilds)
+        activity_text = f"/hackcheck on {server_count} servers"
+        await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=activity_text))
         await self.tree.sync()
-        print(f"Tüm OSINT pipeline aşamaları yüklendi ve komutlar senkronize edildi. (Aktif Modül: {len(LOADED_MODULES)})")
 
-bot = NullBot()
-BOT_TOKEN = os.getenv("DISCORD_TOKEN")
-DARK_COLOR = discord.Color.from_rgb(47, 49, 54)
+        logging.info(f"Bot {self.user} is ready and running in {len(self.guilds)} servers.")
 
-@bot.event
-async def on_ready():
-    print("-----------------------------------------")
-    print(f"NULLL-INTELLIGENCE Ultimate Engine Aktif: {bot.user.name}")
-    print(f"ID: {bot.user.id}")
-    print("-----------------------------------------")
+    async def on_guild_join(self, guild):
+        if config.get("webhook_url"):
+            await self.send_webhook_message_for_guild(guild)
 
-# 1. Discord Kimlik Denetimi
-@bot.tree.command(name="ara", description="NULLL-INTELLIGENCE - Discord Kimlik Denetimi")
-async def ara(interaction: discord.Interaction, user_id: str):
-    await interaction.response.defer()
-    try:
-        user = await bot.fetch_user(int(user_id))
-        timestamp_ms = ((user.id >> 22) + 1420070400000) / 1000.0
-        created_at = datetime.datetime.fromtimestamp(timestamp_ms, datetime.timezone.utc).strftime("%d.%m.%Y - %H:%M:%S UTC")
-
-        embed = discord.Embed(title="🛡️ `NULLL-INTELLIGENCE` | Discord Kimlik Denetimi", color=DARK_COLOR)
-        embed.set_thumbnail(url=user.avatar.url if user.avatar else user.default_avatar.url)
-        
-        embed.add_field(name="👤 Kullanıcı Adı", value=f"`{user.name}`", inline=True)
-        embed.add_field(name="🏷️ Görünen Ad", value=f"`{user.display_name}`", inline=True)
-        embed.add_field(name="🤖 Bot mu?", value="`Evet`" if user.bot else "`Hayır`", inline=True)
-        embed.add_field(name="🆔 Discord ID", value=f"```text\n{user.id}\n```", inline=False)
-        embed.add_field(name="📅 Hesabın Oluşturulma Tarihi", value=f"```text\n{created_at}\n```", inline=False)
-        
-        embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL-INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
-        await interaction.followup.send(embed=embed)
-    except Exception as e:
-        await interaction.followup.send(f"❌ **Hata:** `{e}`", ephemeral=True)
-
-# 2. E-Posta İstihbarat Analizi (EmailInvestigationStage / Holehe / HIBP)
-@bot.tree.command(name="email", description="NULLL-INTELLIGENCE - Derin E-Posta Sızıntı ve Servis Taraması")
-async def email_check(interaction: discord.Interaction, email: str):
-    await interaction.response.defer()
-    try:
-        results_summary = []
-        for mod_name, mod in LOADED_MODULES.items():
-            if hasattr(mod, "check_hibp"):
-                try:
-                    hibp = mod.check_hibp(email)
-                    if hibp:
-                        results_summary.append(f"🔴 HIBP: {len(hibp)} sızıntı bulundu.")
-                except Exception:
-                    pass
-            if hasattr(mod, "run_holehe"):
-                try:
-                    sites = mod.run_holehe(email)
-                    if sites:
-                        results_summary.append(f"🟢 Holehe: {len(sites)} platformda kayıtlı.")
-                except Exception:
-                    pass
-
-        embed = discord.Embed(
-            title="📧 `NULLL-INTELLIGENCE` | E-Posta İstihbarat Raporu", 
-            description=f"> **Hedef E-Posta:** `{email}`",
-            color=DARK_COLOR
-        )
-        
-        if results_summary:
-            embed.add_field(name="🔍 Bulgular", value="\n".join(results_summary), inline=False)
-        else:
-            embed.add_field(name="ℹ️ Durum", value="`EmailInvestigationStage motoru çalıştırıldı. Detaylı tarama tamamlandı.`", inline=False)
-            
-        embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL-INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
-        await interaction.followup.send(embed=embed)
-    except Exception as e:
-        await interaction.followup.send(f"❌ **Hata:** `{e}`", ephemeral=True)
-
-# 3. Telefon Numarası Analizi (PhoneInvestigationStage)
-@bot.tree.command(name="phone", description="NULLL-INTELLIGENCE - Telefon Numarası & Operatör Analizi")
-async def phone_check(interaction: discord.Interaction, phone_number: str):
-    await interaction.response.defer()
-    try:
-        meta = {}
-        carrier_data = {}
-        
-        for mod_name, mod in LOADED_MODULES.items():
-            if hasattr(mod, "PhoneInvestigationStage"):
-                stage_cls = getattr(mod, "PhoneInvestigationStage")
-                if hasattr(stage_cls, "_validate_phonenumbers"):
-                    meta = stage_cls._validate_phonenumbers(phone_number)
-                if hasattr(stage_cls, "_carrier_lookup"):
-                    carrier_data = stage_cls._carrier_lookup(phone_number)
-                break
-
-        embed = discord.Embed(
-            title="📱 `NULLL-INTELLIGENCE` | Telefon İstihbarat Analizi", 
-            description=f"> **Hedef Numara:** `{phone_number}`",
-            color=DARK_COLOR
-        )
-        
-        if meta:
-            embed.add_field(name="📊 Numara Meta Verileri", value=f"```text\nGeçerli Mi?: {meta.get('is_valid', 'Bilinmiyor')}\nTip: {meta.get('number_type', 'Bilinmiyor')}\nÜlke: {meta.get('country', 'Bilinmiyor')}\nOperatör: {meta.get('carrier', 'Bilinmiyor')}\n```", inline=False)
-            
-        if carrier_data:
-            embed.add_field(name="📡 Carrier & Lokasyon Verisi", value=f"```text\nOperatör: {carrier_data.get('carrier', 'Bilinmiyor')}\nHat Türü: {carrier_data.get('line_type', 'Bilinmiyor')}\nÜlke Kodu: {carrier_data.get('country_code', 'Bilinmiyor')}\n```", inline=False)
-
-        if not meta and not carrier_data:
-            embed.add_field(name="ℹ️ Durum", value="`PhoneInvestigationStage pipeline çalıştırıldı.`", inline=False)
-
-        embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL-INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
-        await interaction.followup.send(embed=embed)
-    except Exception as e:
-        await interaction.followup.send(f"❌ **Hata:** `{e}`", ephemeral=True)
-
-# 4. Alan Adı / Domain Analizi (DomainInvestigationStage)
-@bot.tree.command(name="domain", description="NULLL-INTELLIGENCE - Alan Adı, DNS, SSL & Subdomain Taraması")
-async def domain_check(interaction: discord.Interaction, domain: str):
-    await interaction.response.defer()
-    try:
-        dns_records = {}
-        ssl_data = {}
-        
-        for mod_name, mod in LOADED_MODULES.items():
-            if hasattr(mod, "DomainInvestigationStage"):
-                stage_cls = getattr(mod, "DomainInvestigationStage")
-                if hasattr(stage_cls, "_query_dns"):
-                    dns_records = stage_cls._query_dns(domain)
-                if hasattr(stage_cls, "_get_ssl_info"):
-                    ssl_data = stage_cls._get_ssl_info(domain)
-                break
-
-        embed = discord.Embed(
-            title="🌐 `NULLL-INTELLIGENCE` | Domain İstihbarat Raporu", 
-            description=f"> **Hedef Domain:** `{domain}`",
-            color=DARK_COLOR
-        )
-        
-        if dns_records:
-            dns_str = "\n".join([f"{k}: {', '.join(v[:2])}" for k, v in dns_records.items()])
-            embed.add_field(name="📡 DNS Kayıtları", value=f"```text\n{dns_str}\n```", inline=False)
-            
-        if ssl_data:
-            embed.add_field(name="🔒 SSL Sertifikası", value=f"```text\nİhraç Eden: {ssl_data.get('issuer', 'N/A')}\nBitiş: {ssl_data.get('not_after', 'N/A')}\n```", inline=False)
-
-        if not dns_records and not ssl_data:
-            embed.add_field(name="ℹ️ Durum", value="`DomainInvestigationStage pipeline üzerinden tarandı.`", inline=False)
-
-        embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL-INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
-        await interaction.followup.send(embed=embed)
-    except Exception as e:
-        await interaction.followup.send(f"❌ **Hata:** `{e}`", ephemeral=True)
-
-# 5. IP Network Analizi
-@bot.tree.command(name="ip-lookup", description="NULLL-INTELLIGENCE - Detaylı IP ve Harita Sorgulama")
-async def ip_lookup(interaction: discord.Interaction, ip_address: str):
-    await interaction.response.defer()
-    try:
-        res = requests.get(f"http://ip-api.com/json/{ip_address}?fields=status,message,continent,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,proxy").json()
-        if res.get("status") == "success":
-            embed = discord.Embed(title="🌐 `NULLL-INTELLIGENCE` | IP Network Analysis", description=f"> **Hedef IP Adresi:** `{ip_address}`", color=DARK_COLOR)
-            
-            embed.add_field(name="🌍 Kıta", value=f"`{res.get('continent', 'N/A')}`", inline=True)
-            embed.add_field(name="🏳️ Ülke", value=f"`{res.get('country')} ({res.get('countryCode')})`", inline=True)
-            embed.add_field(name="📍 Bölge", value=f"`{res.get('regionName', 'N/A')}`", inline=True)
-            embed.add_field(name="🏙️ Şehir", value=f"`{res.get('city', 'N/A')}`", inline=True)
-            embed.add_field(name="📮 Posta Kodu", value=f"`{res.get('zip', 'N/A')}`", inline=True)
-            embed.add_field(name="🕒 Zaman Dilimi", value=f"`{res.get('timezone', 'N/A')}`", inline=True)
-            
-            embed.add_field(name="📡 İnternet Servis Sağlayıcı (ISP)", value=f"```text\n{res.get('isp', 'N/A')}\n```", inline=False)
-            embed.add_field(name="🏢 Organizasyon / AS", value=f"```text\n{res.get('org', 'N/A')} ({res.get('as', 'N/A')})\n```", inline=False)
-            embed.add_field(name="🛡️ Proxy / VPN Tespiti", value="`Evet (Riskli)`" if res.get('proxy') else "`Hayır (Temiz)`", inline=False)
-            
-            lat, lon = res.get("lat"), res.get("lon")
-            if lat and lon:
-                maps_url = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-                embed.add_field(name="🗺️ Coğrafi Konum", value=f"[Google Maps üzerinde Aç ↗]({maps_url})", inline=False)
-
-            embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL-INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
-            await interaction.followup.send(embed=embed)
-        else:
-            await interaction.followup.send("❌ **Hata:** Geçersiz IP adresi!", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ **Hata:** `{e}`", ephemeral=True)
 
 if __name__ == "__main__":
-    if not BOT_TOKEN:
-        print("HATA: DISCORD_TOKEN çevre değişkeni bulunamadı!")
+    keep_alive()  # Web sunucusunu başlatıyoruz (24/7 Render desteği)
+    
+    intents = discord.Intents.default()
+    intents.message_content = True
+    intents.members = True
+    
+    bot = Bot(intents=intents)
+    token = config.get("discord_token") or os.getenv("DISCORD_TOKEN")
+    
+    if not token:
+        logging.critical("Discord token bulunamadı! config.json veya DISCORD_TOKEN çevre değişkenini kontrol edin.")
     else:
-        keep_alive()
-        bot.run(BOT_TOKEN)
+        bot.run(token)
