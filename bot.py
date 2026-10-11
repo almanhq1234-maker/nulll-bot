@@ -134,7 +134,6 @@ async def email_leak(ctx, email: str):
                 if isinstance(data, list):
                     leaks = [b.get("Name", str(b)) for b in data]
         
-        # Ek olarak XposedOrNot veritabanını da tara
         r2 = requests.get(EMAIL_API_URL.format(email=email), timeout=5)
         if r2.status_code == 200:
             data2 = r2.json()
@@ -187,7 +186,6 @@ async def email_leak(ctx, email: str):
 @bot.slash_command(name="phone-sorgu", description="NULLL- INTELLIGENCE - Telefon Numarası İstihbarat Analizi", **USER_INSTALL_CONFIG)
 async def phone_lookup(ctx, phone_number: str):
     await ctx.defer(ephemeral=True)
-    # Temizleme ve biçimlendirme
     clean_phone = "".join(filter(str.isdigit, phone_number))
     
     embed = discord.Embed(
@@ -260,3 +258,14 @@ async def url_analysis(ctx, target_url: str):
         target_url = "https://" + target_url
     try:
         res = requests.get(target_url, timeout=5)
+        embed = discord.Embed(title="🔍 `NULLL- INTELLIGENCE` | Web URL Bağlantı Analizi", description=f"> **Hedef URL:** `{target_url}`", color=DARK_COLOR)
+        embed.add_field(name="📡 HTTP Durum Kodu", value=f"`{res.status_code}`", inline=True)
+        embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+        await ctx.respond(embed=embed)
+    except Exception as e:
+        await ctx.respond(f"❌ **Bağlantı Hatası:** `{e}`", ephemeral=True)
+
+@bot.slash_command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres Harita Sorgulama", **USER_INSTALL_CONFIG)
+async def adres_sorgu(ctx, adres: str):
+    await ctx.defer()
+    maps_url = f"
