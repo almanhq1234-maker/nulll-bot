@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread
 from flask import Flask
 import discord
+from discord import app_commands
 from discord.ext import commands
 import requests
 
@@ -75,7 +76,15 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+class NullBot(commands.Bot):
+    def __init__(self):
+        super().__init__(command_prefix="!", intents=intents)
+
+    async def setup_hook(self):
+        await self.tree.sync()
+        print("Slash komutları senkronize edildi.")
+
+bot = NullBot()
 BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 
 DARK_COLOR = discord.Color.from_rgb(47, 49, 54)
@@ -85,17 +94,12 @@ async def on_ready():
     print("-----------------------------------------")
     print(f"NULLL-INTELLIGENCE Aktif: {bot.user.name}")
     print(f"ID: {bot.user.id}")
-    try:
-        await bot.sync_commands()
-        print("Komutlar Discord'a başarıyla senkronize edildi!")
-    except Exception as e:
-        print(f"Senkronizasyon hatası: {e}")
     print("-----------------------------------------")
 
 # 1. Discord Kimlik Denetimi
-@bot.slash_command(name="ara", description="NULLL-INTELLIGENCE - Discord Kimlik Denetimi")
-async def ara(ctx, user_id: str):
-    await ctx.defer()
+@bot.tree.command(name="ara", description="NULLL-INTELLIGENCE - Discord Kimlik Denetimi")
+async def ara(interaction: discord.Interaction, user_id: str):
+    await interaction.response.defer()
     try:
         user = await bot.fetch_user(int(user_id))
         timestamp_ms = ((user.id >> 22) + 1420070400000) / 1000.0
@@ -110,15 +114,15 @@ async def ara(ctx, user_id: str):
         embed.add_field(name="🆔 Discord ID", value=f"```text\n{user.id}\n```", inline=False)
         embed.add_field(name="📅 Hesabın Oluşturulma Tarihi", value=f"```text\n{created_at}\n```", inline=False)
         
-        embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL-INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
-        await ctx.respond(embed=embed)
+        embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL-INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
+        await interaction.followup.send(embed=embed)
     except Exception as e:
-        await ctx.respond(f"❌ **Hata:** `{e}`", ephemeral=True)
+        await interaction.followup.send(f"❌ **Hata:** `{e}`", ephemeral=True)
 
 # 2. Gelişmiş Kullanıcı Adı Taraması
-@bot.slash_command(name="username", description="NULLL-INTELLIGENCE - Profesyonel Sosyal Medya & Kullanıcı Adı Taraması")
-async def username_check(ctx, username: str):
-    await ctx.defer()
+@bot.tree.command(name="username", description="NULLL-INTELLIGENCE - Profesyonel Sosyal Medya & Kullanıcı Adı Taraması")
+async def username_check(interaction: discord.Interaction, username: str):
+    await interaction.response.defer()
     
     hits = run_user_scanner(username, mode="username")
     if not hits:
@@ -147,19 +151,19 @@ async def username_check(ctx, username: str):
             pass
 
         if len(hits) > 15:
-            embed.set_footer(text=f"Ve {len(hits) - 15} tane daha profil bulundu! • NULLL-INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+            embed.set_footer(text=f"Ve {len(hits) - 15} tane daha profil bulundu! • NULLL-INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
         else:
-            embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL-INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+            embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL-INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
     else:
         embed.add_field(name="❌ Sonuç", value="`Belirtilen kullanıcı adı için aktif profil bulunamadı.`", inline=False)
-        embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL-INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+        embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL-INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
 
-    await ctx.respond(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 # 3. IP Network Analizi
-@bot.slash_command(name="ip-lookup", description="NULLL-INTELLIGENCE - Detaylı IP ve Harita Sorgulama")
-async def ip_lookup(ctx, ip_address: str):
-    await ctx.defer()
+@bot.tree.command(name="ip-lookup", description="NULLL-INTELLIGENCE - Detaylı IP ve Harita Sorgulama")
+async def ip_lookup(interaction: discord.Interaction, ip_address: str):
+    await interaction.response.defer()
     try:
         res = requests.get(f"http://ip-api.com/json/{ip_address}?fields=status,message,continent,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,proxy").json()
         if res.get("status") == "success":
@@ -181,12 +185,12 @@ async def ip_lookup(ctx, ip_address: str):
                 maps_url = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
                 embed.add_field(name="🗺️ Coğrafi Konum", value=f"[Google Maps üzerinde Aç ↗]({maps_url})", inline=False)
 
-            embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL-INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
-            await ctx.respond(embed=embed)
+            embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL-INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
+            await interaction.followup.send(embed=embed)
         else:
-            await ctx.respond("❌ **Hata:** Geçersiz IP adresi!", ephemeral=True)
+            await interaction.followup.send("❌ **Hata:** Geçersiz IP adresi!", ephemeral=True)
     except Exception as e:
-        await ctx.respond(f"❌ **Hata:** `{e}`", ephemeral=True)
+        await interaction.followup.send(f"❌ **Hata:** `{e}`", ephemeral=True)
 
 if __name__ == "__main__":
     if not BOT_TOKEN:
