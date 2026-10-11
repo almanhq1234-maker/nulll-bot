@@ -1,6 +1,4 @@
 discord.py
-aiohttp
-aiolimiter
-reportlab
 requests
 Flask
+python-whois
