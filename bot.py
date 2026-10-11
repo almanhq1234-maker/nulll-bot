@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread
 from flask import Flask
 import discord
+from discord import app_commands
 from discord.ext import commands
 import requests
 import whois
@@ -31,7 +32,15 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+class NullBot(commands.Bot):
+    def __init__(self):
+        super().__init__(command_prefix="!", intents=intents)
+
+    async def setup_hook(self):
+        await self.tree.sync()
+        print("Slash komutları başarıyla senkronize edildi!")
+
+bot = NullBot()
 
 BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -146,16 +155,11 @@ async def on_ready():
     print("-----------------------------------------")
     print(f"NULLL- INTELLIGENCE Aktif: {bot.user.name}")
     print(f"ID: {bot.user.id}")
-    try:
-        await bot.sync_commands()
-        print("Komutlar Discord'a başarıyla senkronize edildi!")
-    except Exception as e:
-        print(f"Senkronizasyon hatası: {e}")
     print("-----------------------------------------")
 
-@bot.slash_command(name="ara", description="NULLL- INTELLIGENCE - Kimlik Denetimi")
-async def ara(ctx, user_id: str):
-    await ctx.defer()
+@bot.tree.command(name="ara", description="NULLL- INTELLIGENCE - Kimlik Denetimi")
+async def ara(interaction: discord.Interaction, user_id: str):
+    await interaction.response.defer()
     try:
         user = await bot.fetch_user(int(user_id))
         timestamp_ms = ((user.id >> 22) + 1420070400000) / 1000.0
@@ -171,14 +175,14 @@ async def ara(ctx, user_id: str):
         embed.add_field(name="🆔 Discord ID", value=f"```text\n{user.id}\n```", inline=False)
         embed.add_field(name="📅 Hesabın Oluşturulma Tarihi", value=f"```text\n{created_at}\n```", inline=False)
         
-        embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
-        await ctx.respond(embed=embed)
+        embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
+        await interaction.followup.send(embed=embed)
     except Exception as e:
-        await ctx.respond(f"❌ **Hata:** `{e}`", ephemeral=True)
+        await interaction.followup.send(f"❌ **Hata:** `{e}`", ephemeral=True)
 
-@bot.slash_command(name="ip-lookup", description="NULLL- INTELLIGENCE - Detaylı IP ve Harita Sorgulama")
-async def ip_lookup(ctx, ip_address: str):
-    await ctx.defer()
+@bot.tree.command(name="ip-lookup", description="NULLL- INTELLIGENCE - Detaylı IP ve Harita Sorgulama")
+async def ip_lookup(interaction: discord.Interaction, ip_address: str):
+    await interaction.response.defer()
     try:
         res = requests.get(IP_API_URL.format(ip=ip_address)).json()
         if res.get("status") == "success":
@@ -201,16 +205,16 @@ async def ip_lookup(ctx, ip_address: str):
                 maps_url = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
                 embed.add_field(name="🗺️ Coğrafi Konum", value=f"[Google Maps üzerinde Aç ↗]({maps_url})", inline=False)
 
-            embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
-            await ctx.respond(embed=embed)
+            embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
+            await interaction.followup.send(embed=embed)
         else:
-            await ctx.respond("❌ **Hata:** Geçersiz IP adresi!", ephemeral=True)
+            await interaction.followup.send("❌ **Hata:** Geçersiz IP adresi!", ephemeral=True)
     except Exception as e:
-        await ctx.respond(f"❌ **Hata:** `{e}`", ephemeral=True)
+        await interaction.followup.send(f"❌ **Hata:** `{e}`", ephemeral=True)
 
-@bot.slash_command(name="email-sızıntı", description="NULLL- INTELLIGENCE - Ultra Güçlü E-Posta İstihbarat & Sızıntı Analizi")
-async def email_leak(ctx, email: str):
-    await ctx.defer(ephemeral=True)
+@bot.tree.command(name="email-sızıntı", description="NULLL- INTELLIGENCE - Ultra Güçlü E-Posta İstihbarat & Sızıntı Analizi")
+async def email_leak(interaction: discord.Interaction, email: str):
+    await interaction.response.defer(ephemeral=True)
     email = email.strip().lower()
     hibp_api_key = os.getenv("HIBP_API_KEY", "")
     
@@ -253,3 +257,141 @@ async def email_leak(ctx, email: str):
             gravatar_url = g_url
     except Exception:
         pass
+
+    embed = discord.Embed(
+        title="📧 `NULLL- INTELLIGENCE` | Ultra E-Posta Analizi",
+        description=f"> **Sorgulanan E-Posta:** `{email}`",
+        color=discord.Color.red() if leaks or emailrep_data.get("reputation") == "low" else discord.Color.green()
+    )
+    
+    if leaks:
+        embed.add_field(name="⚠️ Tespit Edilen Veri İhlalleri (Sızıntı)", value=f"```text\n" + "\n".join([f"• {l}" for l in leaks[:10]]) + "\n```", inline=False)
+    else:
+        embed.add_field(name="✅ Sızıntı Durumu", value="`Herhangi bir veri ihlali bulunamadı (Temiz).`", inline=False)
+        
+    rep = emailrep_data.get("reputation", "Bilinmiyor")
+    suspicious = emailrep_data.get("suspicious", False)
+    embed.add_field(name="🛡️ EmailRep İtibar Skoru", value=f"`{str(rep).upper()}` | Şüpheli: `{'Evet' if suspicious else 'Hayır'}`", inline=False)
+
+    if gravatar_url:
+        embed.add_field(name="🖼️ Profil Görseli (Gravatar)", value=f"[Görseli Aç ↗]({gravatar_url})", inline=False)
+        embed.set_thumbnail(url=gravatar_url)
+
+    embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="phone-sorgu", description="NULLL- INTELLIGENCE - PhoneInfo Tarzı Detaylı Telefon Analizi")
+async def phone_lookup(interaction: discord.Interaction, phone_number: str):
+    await interaction.response.defer(ephemeral=True)
+    clean_phone = "".join(filter(str.isdigit, phone_number))
+    
+    country_name = "Bilinmiyor / Uluslararası"
+    carrier = "Bilinmiyor"
+    line_type = "Mobil / Sabit Hat"
+    
+    if clean_phone.startswith("90"):
+        country_name = "Türkiye (+90)"
+        carrier = "Türk Telekom / Turkcell / Vodafone"
+    elif clean_phone.startswith("1"):
+        country_name = "ABD / Kanada (+1)"
+        carrier = "North American Numbering Plan"
+    elif clean_phone.startswith("44"):
+        country_name = "Birleşik Krallık (+44)"
+        carrier = "UK Carrier"
+    elif clean_phone.startswith("49"):
+        country_name = "Almanya (+49)"
+        carrier = "German Carrier"
+
+    embed = discord.Embed(
+        title="📱 `NULLL- INTELLIGENCE` | PhoneInfo İstihbarat Analizi",
+        description=f"> **Hedef Numara:** `+{clean_phone}`",
+        color=DARK_COLOR
+    )
+    
+    embed.add_field(name="🌍 Ülke / Bölge", value=f"`{country_name}`", inline=True)
+    embed.add_field(name="📶 Muhtemel Operatör", value=f"`{carrier}`", inline=True)
+    embed.add_field(name="📞 Hat Türü", value=f"`{line_type}`", inline=True)
+    
+    embed.add_field(name="🔍 Biçimlendirilmiş Format", value=f"```text\n+{clean_phone}\n```", inline=False)
+    
+    whatsapp_url = f"https://wa.me/{clean_phone}"
+    embed.add_field(name="💬 Hızlı Bağlantılar", value=f"[WhatsApp ile Sohbet Başlat ↗]({whatsapp_url})", inline=False)
+    
+    embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="username", description="NULLL- INTELLIGENCE - WMN Gelişmiş Sosyal Medya Taraması")
+async def username_check(interaction: discord.Interaction, username: str):
+    await interaction.response.defer()
+    
+    hits = run_wmn_scan(username, max_workers=20, timeout=4)
+
+    embed = discord.Embed(
+        title="🔍 `NULLL- INTELLIGENCE` | WMN Gelişmiş Kullanıcı Adı Taraması", 
+        description=f"> **Hedef Kullanıcı Adı:** `{username}`",
+        color=DARK_COLOR
+    )
+    
+    if hits:
+        found_links = []
+        for h in hits[:15]:
+            s_name = h.get("site", "Bilinmiyor")
+            s_url = h.get("url", "#")
+            icon = get_platform_icon(s_name)
+            found_links.append(f"{icon} [{s_name}]({s_url})")
+            
+        embed.add_field(name=f"🔗 Bulunan Aktif Profiller (Toplam: {len(hits)})", value="\n".join(found_links), inline=False)
+        if len(hits) > 15:
+            embed.set_footer(text=f"Ve {len(hits) - 15} tane daha profil bulundu! • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
+        else:
+            embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
+    else:
+        embed.add_field(name="❌ Sonuç", value="`Belirtilen kullanıcı adı için aktif profil bulunamadı.`", inline=False)
+        embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
+
+    await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="domain-sorgu", description="NULLL- INTELLIGENCE - Domain Whois")
+async def domain_lookup(interaction: discord.Interaction, domain_name: str):
+    await interaction.response.defer()
+    try:
+        w = whois.whois(domain_name)
+        embed = discord.Embed(title="🌐 `NULLL- INTELLIGENCE` | Domain WHOIS Bilgisi", description=f"> **Hedef Domain:** `{domain_name}`", color=DARK_COLOR)
+        embed.add_field(name="📝 Kayıt Sağlayıcısı (Registrar)", value=f"```text\n{str(w.registrar or 'Bilinmiyor')}\n```", inline=False)
+        embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        await interaction.followup.send(f"❌ **Hata:** `{e}`", ephemeral=True)
+
+@bot.tree.command(name="url-analiz", description="NULLL- INTELLIGENCE - URL Analiz")
+async def url_analysis(interaction: discord.Interaction, target_url: str):
+    await interaction.response.defer()
+    if not target_url.startswith("http"):
+        target_url = "https://" + target_url
+    try:
+        res = requests.get(target_url, timeout=5)
+        embed = discord.Embed(title="🌐 `NULLL- INTELLIGENCE` | Web URL Bağlantı Analizi", description=f"> **Hedef URL:** `{target_url}`", color=DARK_COLOR)
+        embed.add_field(name="📡 HTTP Durum Kodu", value=f"`{res.status_code}`", inline=True)
+        embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        await interaction.followup.send(f"❌ **Bağlantı Hatası:** `{e}`", ephemeral=True)
+
+@bot.tree.command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres Harita Sorgulama")
+async def adres_sorgu(interaction: discord.Interaction, adres: str):
+    await interaction.response.defer()
+    maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(adres)}"
+    
+    embed = discord.Embed(title="📍 `NULLL- INTELLIGENCE` | Adres & Harita Sorgu", color=DARK_COLOR)
+    embed.add_field(name="🏢 Aranan Adres", value=f"```text\n{adres}\n```", inline=False)
+    embed.add_field(name="🗺️ Harita Bağlantısı", value=f"[Google Maps üzerinde Aç ↗]({maps_url})", inline=False)
+    embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
+    
+    await interaction.followup.send(embed=embed)
+
+if __name__ == "__main__":
+    if not BOT_TOKEN:
+        print("HATA: DISCORD_TOKEN çevre değişkeni bulunamadı!")
+    else:
+        keep_alive()
+        bot.run(BOT_TOKEN)
