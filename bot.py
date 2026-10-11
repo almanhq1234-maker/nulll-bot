@@ -3,9 +3,8 @@ import os
 import urllib.parse
 import hashlib
 import json
-import time
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from threading import Thread
 from flask import Flask
 import discord
@@ -69,19 +68,23 @@ def get_platform_icon(site_name: str) -> str:
     return "🟢"
 
 # ──────────────────────────────────────────────────────────────────────
-# WMN SCANNER MOTORU
+# WMN SCANNER MOTORU (Bloklamayan Asenkron Yapı)
 # ──────────────────────────────────────────────────────────────────────
 _WMN_URL = "https://raw.githubusercontent.com/WebBreacher/WhatsMyName/main/wmn-data.json"
 _cached_wmn_data = None
-_wmn_lock = threading.Lock()
+_wmn_lock = asyncio.Lock()
 
-def _load_wmn_data():
+async def _load_wmn_data():
     global _cached_wmn_data
-    with _wmn_lock:
+    async with _wmn_lock:
         if _cached_wmn_data is not None:
             return _cached_wmn_data
         try:
-            resp = requests.get(_WMN_URL, headers={"User-Agent": "WhoCord-OSINT/1.1"}, timeout=15)
+            loop = asyncio.get_running_loop()
+            resp = await loop.run_in_executor(
+                None, 
+                lambda: requests.get(_WMN_URL, headers={"User-Agent": "WhoCord-OSINT/1.1"}, timeout=15)
+            )
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, dict) and "sites" in data:
@@ -131,22 +134,24 @@ def _probe_site(site: dict, username: str, timeout: int) -> dict | None:
         pass
     return None
 
-def run_wmn_scan(username: str, max_workers: int = 25, timeout: int = 4) -> list[dict]:
-    data = _load_wmn_data()
+async def run_wmn_scan(username: str, max_workers: int = 15, timeout: int = 3) -> list[dict]:
+    data = await _load_wmn_data()
     if not data or not data.get("sites"):
         return []
 
     sites = data["sites"]
     hits = []
+    loop = asyncio.get_running_loop()
+    
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futures = {ex.submit(_probe_site, s, username, timeout): s for s in sites}
-        for fut in as_completed(futures):
-            try:
-                res = fut.result()
-                if res:
-                    hits.append(res)
-            except Exception:
-                pass
+        futures = [
+            loop.run_in_executor(ex, _probe_site, s, username, timeout) 
+            for s in sites
+        ]
+        results = await asyncio.gather(*futures, return_exceptions=True)
+        for res in results:
+            if isinstance(res, dict) and res:
+                hits.append(res)
     return hits
 
 
@@ -184,7 +189,11 @@ async def ara(interaction: discord.Interaction, user_id: str):
 async def ip_lookup(interaction: discord.Interaction, ip_address: str):
     await interaction.response.defer()
     try:
-        res = requests.get(IP_API_URL.format(ip=ip_address)).json()
+        loop = asyncio.get_running_loop()
+        res = await loop.run_in_executor(
+            None, 
+            lambda: requests.get(IP_API_URL.format(ip=ip_address)).json()
+        )
         if res.get("status") == "success":
             embed = discord.Embed(title="🌐 `NULLL- INTELLIGENCE` | IP Network Analysis", description=f"> **Hedef IP Adresi:** `{ip_address}`", color=DARK_COLOR)
             
@@ -223,38 +232,46 @@ async def email_leak(interaction: discord.Interaction, email: str):
     gravatar_url = None
 
     try:
-        if hibp_api_key:
-            headers = {"User-Agent": "WhoCord-OSINT/1.1", "hibp-api-key": hibp_api_key, "Accept": "application/json"}
-            r = requests.get(f"https://haveibeenpwned.com/api/v3/breachedaccount/{email}", headers=headers, params={"truncateResponse": "false"}, timeout=10)
-            if r.status_code == 200:
-                data = r.json()
-                if isinstance(data, list):
-                    leaks = [b.get("Name", str(b)) for b in data]
-        
-        r2 = requests.get(XPOSED_API_URL.format(email=email), timeout=5)
-        if r2.status_code == 200:
-            data2 = r2.json()
-            if "breaches" in data2 and data2["breaches"]:
-                for b in data2["breaches"]:
-                    b_str = str(b)
-                    if b_str not in leaks:
-                        leaks.append(b_str)
-    except Exception:
-        pass
+        loop = asyncio.get_running_loop()
+        def check_apis():
+            nonlocal leaks, emailrep_data, gravatar_url
+            try:
+                if hibp_api_key:
+                    headers = {"User-Agent": "WhoCord-OSINT/1.1", "hibp-api-key": hibp_api_key, "Accept": "application/json"}
+                    r = requests.get(f"https://haveibeenpwned.com/api/v3/breachedaccount/{email}", headers=headers, params={"truncateResponse": "false"}, timeout=10)
+                    if r.status_code == 200:
+                        data = r.json()
+                        if isinstance(data, list):
+                            leaks = [b.get("Name", str(b)) for b in data]
+                
+                r2 = requests.get(XPOSED_API_URL.format(email=email), timeout=5)
+                if r2.status_code == 200:
+                    data2 = r2.json()
+                    if "breaches" in data2 and data2["breaches"]:
+                        for b in data2["breaches"]:
+                            b_str = str(b)
+                            if b_str not in leaks:
+                                leaks.append(b_str)
+            except Exception:
+                pass
 
-    try:
-        r = requests.get(f"https://emailrep.io/{email}", headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
-        if r.status_code == 200:
-            emailrep_data = r.json()
-    except Exception:
-        pass
+            try:
+                r = requests.get(f"https://emailrep.io/{email}", headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+                if r.status_code == 200:
+                    emailrep_data = r.json()
+            except Exception:
+                pass
 
-    try:
-        email_hash = hashlib.md5(email.encode()).hexdigest()
-        g_url = f"https://www.gravatar.com/avatar/{email_hash}?d=404&s=200"
-        r = requests.get(g_url, timeout=5)
-        if r.status_code == 200 and 'image' in r.headers.get('Content-Type', ''):
-            gravatar_url = g_url
+            try:
+                email_hash = hashlib.md5(email.encode()).hexdigest()
+                g_url = f"https://www.gravatar.com/avatar/{email_hash}?d=404&s=200"
+                r = requests.get(g_url, timeout=5)
+                if r.status_code == 200 and 'image' in r.headers.get('Content-Type', ''):
+                    gravatar_url = g_url
+            except Exception:
+                pass
+
+        await loop.run_in_executor(None, check_apis)
     except Exception:
         pass
 
@@ -324,7 +341,8 @@ async def phone_lookup(interaction: discord.Interaction, phone_number: str):
 async def username_check(interaction: discord.Interaction, username: str):
     await interaction.response.defer()
     
-    hits = run_wmn_scan(username, max_workers=20, timeout=4)
+    # Bloklanmayı önlemek için iş yükü ve timeout optimize edildi
+    hits = await run_wmn_scan(username, max_workers=15, timeout=3)
 
     embed = discord.Embed(
         title="🔍 `NULLL- INTELLIGENCE` | WMN Gelişmiş Kullanıcı Adı Taraması", 
@@ -355,7 +373,8 @@ async def username_check(interaction: discord.Interaction, username: str):
 async def domain_lookup(interaction: discord.Interaction, domain_name: str):
     await interaction.response.defer()
     try:
-        w = whois.whois(domain_name)
+        loop = asyncio.get_running_loop()
+        w = await loop.run_in_executor(None, lambda: whois.whois(domain_name))
         embed = discord.Embed(title="🌐 `NULLL- INTELLIGENCE` | Domain WHOIS Bilgisi", description=f"> **Hedef Domain:** `{domain_name}`", color=DARK_COLOR)
         embed.add_field(name="📝 Kayıt Sağlayıcısı (Registrar)", value=f"```text\n{str(w.registrar or 'Bilinmiyor')}\n```", inline=False)
         embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
@@ -369,7 +388,8 @@ async def url_analysis(interaction: discord.Interaction, target_url: str):
     if not target_url.startswith("http"):
         target_url = "https://" + target_url
     try:
-        res = requests.get(target_url, timeout=5)
+        loop = asyncio.get_running_loop()
+        res = await loop.run_in_executor(None, lambda: requests.get(target_url, timeout=5))
         embed = discord.Embed(title="🌐 `NULLL- INTELLIGENCE` | Web URL Bağlantı Analizi", description=f"> **Hedef URL:** `{target_url}`", color=DARK_COLOR)
         embed.add_field(name="📡 HTTP Durum Kodu", value=f"`{res.status_code}`", inline=True)
         embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
@@ -377,21 +397,4 @@ async def url_analysis(interaction: discord.Interaction, target_url: str):
     except Exception as e:
         await interaction.followup.send(f"❌ **Bağlantı Hatası:** `{e}`", ephemeral=True)
 
-@bot.tree.command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres Harita Sorgulama")
-async def adres_sorgu(interaction: discord.Interaction, adres: str):
-    await interaction.response.defer()
-    maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(adres)}"
-    
-    embed = discord.Embed(title="📍 `NULLL- INTELLIGENCE` | Adres & Harita Sorgu", color=DARK_COLOR)
-    embed.add_field(name="🏢 Aranan Adres", value=f"```text\n{adres}\n```", inline=False)
-    embed.add_field(name="🗺️ Harita Bağlantısı", value=f"[Google Maps üzerinde Aç ↗]({maps_url})", inline=False)
-    embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
-    
-    await interaction.followup.send(embed=embed)
-
-if __name__ == "__main__":
-    if not BOT_TOKEN:
-        print("HATA: DISCORD_TOKEN çevre değişkeni bulunamadı!")
-    else:
-        keep_alive()
-        bot.run(BOT_TOKEN)
+@bot.tree.command(name="adres-sorgu",
