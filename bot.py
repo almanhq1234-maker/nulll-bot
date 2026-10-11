@@ -1,6 +1,6 @@
 # =====================================================================
-# Hackcheck - Data breach searching Discord Bot - by RocketGod
-# Render 24/7 Keep-Alive Entegrasyonu ile
+# Hackcheck - Data breach searching Discord Bot - by Crypta
+# Render 24/7 Keep-Alive Entegrasyonu ve Akıllı Config Desteği ile
 # =====================================================================
 
 import asyncio
@@ -36,8 +36,6 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_LEFT
 import csv
 import ast 
-
-from datetime import datetime, timedelta
 
 # ---------------------------------------------------------------------
 # Flask 24/7 Uptime Sunucusu (Render İçin)
@@ -79,20 +77,32 @@ backoff_factor = 0.5
 
 
 def load_config():
+    file_config = {}
     try:
         if os.path.exists("config.json"):
             with open("config.json", "r") as config_file:
-                return json.load(config_file)
-        else:
-            # Çevre değişkenlerinden okuma seçeneği (Render için kolaylık)
-            return {
-                "discord_token": os.getenv("DISCORD_TOKEN", ""),
-                "hackcheck_api_key": os.getenv("HACKCHECK_API_KEY", ""),
-                "webhook_url": os.getenv("WEBHOOK_URL", "")
-            }
+                file_config = json.load(config_file)
     except Exception as e:
-        logging.critical(f"Config yükleme hatası: {e}")
-        raise
+        logging.warning(f"config.json okunamadı: {e}")
+
+    # config.json içerisindeki değerler boş veya sahte yer tutucuysa Render Environment'a geç
+    token = file_config.get("discord_token")
+    if not token or token == "DISCORD_BOT_TOKENINIZ":
+        token = os.getenv("DISCORD_TOKEN", "")
+
+    api_key = file_config.get("hackcheck_api_key")
+    if not api_key or api_key == "HACKCHECK_API_KEYINIZ":
+        api_key = os.getenv("HACKCHECK_API_KEY", "")
+
+    webhook = file_config.get("webhook_url")
+    if not webhook or webhook == "WEBHOOK_URLINIZ":
+        webhook = os.getenv("WEBHOOK_URL", "")
+
+    return {
+        "discord_token": token,
+        "hackcheck_api_key": api_key,
+        "webhook_url": webhook
+    }
 
 
 config = load_config()
@@ -484,91 +494,4 @@ class SearchButton(Button):
         self.search_type = search_type
         self.bot = bot
 
-    async def callback(self, interaction):
-        await self.view.disable_all_buttons()
-        modal = SearchModal(search_type=self.search_type, bot=self.bot)
-        await interaction.response.send_modal(modal)
-
-class SpacerButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(style=discord.ButtonStyle.secondary, label="\u200b", disabled=True)
-
-class SearchTypeView(discord.ui.View):
-    def __init__(self, bot, timeout=30):
-        super().__init__(timeout=timeout)
-        self.bot = bot
-        self.add_buttons()
-
-    def add_buttons(self):
-        types = ["Email", "Password", "Username", "Full Name", "IP Address", "Phone Number", "Hash", "Domain"]
-        for i, t in enumerate(types):
-            if i > 0:
-                self.add_item(SpacerButton())
-            self.add_item(SearchButton(label=f"Search by {t}", search_type=t.lower(), bot=self.bot))
-
-    async def disable_all_buttons(self):
-        for item in self.children:
-            if isinstance(item, Button):
-                item.disabled = True
-        try:
-            await self.message.edit(view=self)  
-        except Exception as e:
-            print(f"Failed to update view: {str(e)}")
-
-    async def on_timeout(self):
-        await self.disable_all_buttons()
-
-
-@discord.app_commands.command(name="hackcheck", description="Search for data breaches.")
-async def check_breach_command(interaction: discord.Interaction):
-    view = SearchTypeView(interaction.client)
-    await interaction.response.send_message("Please select a search type:", view=view, ephemeral=True)
-    view.message = await interaction.original_response()
-
-
-class Bot(discord.Client):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.tree = discord.app_commands.CommandTree(self)
-        self.discord_message_limit = 2000
-
-    async def setup_hook(self):
-        self.tree.add_command(check_breach_command)
-
-    async def on_ready(self):
-        for guild in self.guilds:
-            try:
-                owner = await guild.fetch_member(guild.owner_id)
-                owner_name = f"{owner.name}#{owner.discriminator}"
-            except Exception as e:
-                logging.error(f"Could not fetch owner for guild: {guild.name}, error: {e}")
-                owner_name = "Could not fetch owner"
-            
-            logging.info(f" - {guild.name} (Owner: {owner_name})")
-
-        server_count = len(self.guilds)
-        activity_text = f"/hackcheck on {server_count} servers"
-        await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=activity_text))
-        await self.tree.sync()
-
-        logging.info(f"Bot {self.user} is ready and running in {len(self.guilds)} servers.")
-
-    async def on_guild_join(self, guild):
-        if config.get("webhook_url"):
-            await self.send_webhook_message_for_guild(guild)
-
-
-if __name__ == "__main__":
-    keep_alive()  # Web sunucusunu başlatıyoruz (24/7 Render desteği)
-    
-    intents = discord.Intents.default()
-    intents.message_content = True
-    intents.members = True
-    
-    bot = Bot(intents=intents)
-    token = config.get("discord_token") or os.getenv("DISCORD_TOKEN")
-    
-    if not token:
-        logging.critical("Discord token bulunamadı! config.json veya DISCORD_TOKEN çevre değişkenini kontrol edin.")
-    else:
-        bot.run(token)
+    async def callback(self, interaction
