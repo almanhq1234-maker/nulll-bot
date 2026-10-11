@@ -13,7 +13,7 @@ from discord.ext import commands
 import requests
 
 # ──────────────────────────────────────────────────────────────────────
-# MODÜL İMPORTLARI (Göreceli import çakışmalarını önleyen yapı)
+# MODÜL İMPORTLARI (Korumalı Yapı)
 # ──────────────────────────────────────────────────────────────────────
 try:
     from username_search import run_user_scanner
@@ -80,18 +80,6 @@ BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 
 DARK_COLOR = discord.Color.from_rgb(47, 49, 54)
 
-USER_INSTALL_CONFIG = {
-    "integration_types": {
-        discord.IntegrationType.user_install,
-        discord.IntegrationType.guild_install
-    },
-    "contexts": {
-        discord.InteractionContextType.guild,
-        discord.InteractionContextType.bot_dm,
-        discord.InteractionContextType.private_channel
-    }
-}
-
 @bot.event
 async def on_ready():
     print("-----------------------------------------")
@@ -105,7 +93,7 @@ async def on_ready():
     print("-----------------------------------------")
 
 # 1. Discord Kimlik Denetimi
-@bot.slash_command(name="ara", description="NULLL-INTELLIGENCE - Discord Kimlik Denetimi", **USER_INSTALL_CONFIG)
+@bot.slash_command(name="ara", description="NULLL-INTELLIGENCE - Discord Kimlik Denetimi")
 async def ara(ctx, user_id: str):
     await ctx.defer()
     try:
@@ -128,7 +116,7 @@ async def ara(ctx, user_id: str):
         await ctx.respond(f"❌ **Hata:** `{e}`", ephemeral=True)
 
 # 2. Gelişmiş Kullanıcı Adı Taraması
-@bot.slash_command(name="username", description="NULLL-INTELLIGENCE - Profesyonel Sosyal Medya & Kullanıcı Adı Taraması", **USER_INSTALL_CONFIG)
+@bot.slash_command(name="username", description="NULLL-INTELLIGENCE - Profesyonel Sosyal Medya & Kullanıcı Adı Taraması")
 async def username_check(ctx, username: str):
     await ctx.defer()
     
@@ -169,7 +157,7 @@ async def username_check(ctx, username: str):
     await ctx.respond(embed=embed)
 
 # 3. IP Network Analizi
-@bot.slash_command(name="ip-lookup", description="NULLL-INTELLIGENCE - Detaylı IP ve Harita Sorgulama", **USER_INSTALL_CONFIG)
+@bot.slash_command(name="ip-lookup", description="NULLL-INTELLIGENCE - Detaylı IP ve Harita Sorgulama")
 async def ip_lookup(ctx, ip_address: str):
     await ctx.defer()
     try:
