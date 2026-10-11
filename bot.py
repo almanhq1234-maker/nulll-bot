@@ -68,7 +68,7 @@ def get_platform_icon(site_name: str) -> str:
     return "🟢"
 
 # ──────────────────────────────────────────────────────────────────────
-# WMN SCANNER MOTORU (Bloklamayan Asenkron Yapı)
+# WMN SCANNER MOTORU
 # ──────────────────────────────────────────────────────────────────────
 _WMN_URL = "https://raw.githubusercontent.com/WebBreacher/WhatsMyName/main/wmn-data.json"
 _cached_wmn_data = None
@@ -83,7 +83,7 @@ async def _load_wmn_data():
             loop = asyncio.get_running_loop()
             resp = await loop.run_in_executor(
                 None, 
-                lambda: requests.get(_WMN_URL, headers={"User-Agent": "WhoCord-OSINT/1.1"}, timeout=15)
+                lambda: requests.get(_WMN_URL, headers={"User-Agent": "WhoCord-OSINT/1.1"}, timeout=10)
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -134,12 +134,12 @@ def _probe_site(site: dict, username: str, timeout: int) -> dict | None:
         pass
     return None
 
-async def run_wmn_scan(username: str, max_workers: int = 15, timeout: int = 3) -> list[dict]:
+async def run_wmn_scan(username: str, max_workers: int = 10, timeout: int = 2) -> list[dict]:
     data = await _load_wmn_data()
     if not data or not data.get("sites"):
         return []
 
-    sites = data["sites"]
+    sites = data["sites"][:120]
     hits = []
     loop = asyncio.get_running_loop()
     
@@ -211,8 +211,12 @@ async def ip_lookup(interaction: discord.Interaction, ip_address: str):
             
             lat, lon = res.get("lat"), res.get("lon")
             if lat and lon:
+                # OpenStreetMap tabanlı doğrudan gömülü harita görseli (Statik Harita Karesi)
+                map_image_url = f"https://static-maps.yandex.ru/1.x/?ll={lon},{lat}&z=12&size=600,300&l=map&pt={lon},{lat},pm2rdl"
+                embed.set_image(url=map_image_url)
+                
                 maps_url = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-                embed.add_field(name="🗺️ Coğrafi Konum", value=f"[Google Maps üzerinde Aç ↗]({maps_url})", inline=False)
+                embed.add_field(name="🗺️ Konum Haritası", value=f"[Google Maps ile Detaylı Aç ↗]({maps_url})", inline=False)
 
             embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
             await interaction.followup.send(embed=embed)
@@ -341,7 +345,7 @@ async def phone_lookup(interaction: discord.Interaction, phone_number: str):
 async def username_check(interaction: discord.Interaction, username: str):
     await interaction.response.defer()
     
-    hits = await run_wmn_scan(username, max_workers=15, timeout=3)
+    hits = await run_wmn_scan(username, max_workers=10, timeout=2)
 
     embed = discord.Embed(
         title="🔍 `NULLL- INTELLIGENCE` | WMN Gelişmiş Kullanıcı Adı Taraması", 
@@ -399,10 +403,18 @@ async def url_analysis(interaction: discord.Interaction, target_url: str):
 @bot.tree.command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres Harita Sorgulama")
 async def adres_sorgu(interaction: discord.Interaction, adres: str):
     await interaction.response.defer()
-    maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(adres)}"
     
-    embed = discord.Embed(title="📍 `NULLL- INTELLIGENCE` | Adres & Harita Sorgu", color=DARK_COLOR)
+    # Adresi harita üzerinde görselleştirmek için Statik Harita API URL'si oluşturuyoruz
+    encoded_adres = urllib.parse.quote(adres)
+    map_image_url = f"https://static-maps.yandex.ru/1.x/?text={encoded_adres}&z=13&size=600,300&l=map"
+    maps_url = f"https://www.google.com/maps/search/?api=1&query={encoded_adres}"
+    
+    embed = discord.Embed(title="📍 `NULLL- INTELLIGENCE` | Adres & Harita Görseli", color=DARK_COLOR)
     embed.add_field(name="🏢 Aranan Adres", value=f"```text\n{adres}\n```", inline=False)
+    
+    # Harita görselini doğrudan embed içine ekliyoruz
+    embed.set_image(url=map_image_url)
+    
     embed.add_field(name="🗺️ Harita Bağlantısı", value=f"[Google Maps üzerinde Aç ↗]({maps_url})", inline=False)
     embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
     
