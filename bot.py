@@ -53,7 +53,7 @@ USER_INSTALL_CONFIG = {
 }
 
 # ──────────────────────────────────────────────────────────────────────
-# PLATFORMS REGISTRY (platforms.py entegrasyonu)
+# PLATFORMS REGISTRY
 # ──────────────────────────────────────────────────────────────────────
 PLATFORM_ICONS = {
     "github": "🐙", "twitter": "🐦", "x": "🐦", "reddit": "🤖", "youtube": "▶️",
@@ -72,7 +72,7 @@ def get_platform_icon(site_name: str) -> str:
     return "🟢"
 
 # ──────────────────────────────────────────────────────────────────────
-# WMN SCANNER MOTORU (wmn_scanner.py entegrasyonu)
+# WMN SCANNER MOTORU
 # ──────────────────────────────────────────────────────────────────────
 _WMN_URL = "https://raw.githubusercontent.com/WebBreacher/WhatsMyName/main/wmn-data.json"
 _cached_wmn_data = None
