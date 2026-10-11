@@ -32,7 +32,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 
 IP_API_URL = "http://ip-api.com/json/{ip}?fields=status,message,continent,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,proxy"
-EMAIL_API_URL = "https://api.xposedornot.com/v1/check-email/{email}"
+XPOSED_API_URL = "https://api.xposedornot.com/v1/check-email/{email}"
 
 DARK_COLOR = discord.Color.from_rgb(47, 49, 54)
 
@@ -115,16 +115,18 @@ async def ip_lookup(ctx, ip_address: str):
     except Exception as e:
         await ctx.respond(f"❌ **Hata:** `{e}`", ephemeral=True)
 
-@bot.slash_command(name="email-sızıntı", description="NULLL- INTELLIGENCE - Ultra Güçlü E-Posta İstihbarat & Sızıntı Analizi", **USER_INSTALL_CONFIG)
+@bot.slash_command(name="email-sızıntı", description="NULLL- INTELLIGENCE - WhoCord Holehe & Breach İstihbarat Paketi", **USER_INSTALL_CONFIG)
 async def email_leak(ctx, email: str):
     await ctx.defer(ephemeral=True)
     email = email.strip().lower()
     hibp_api_key = os.getenv("HIBP_API_KEY", "")
     
-    leaks = []
+    breaches = []
     emailrep_data = {}
     gravatar_url = None
+    holehe_detected = []
 
+    # 1. HIBP & XposedOrNot Veri İhlalleri Taraması
     try:
         if hibp_api_key:
             headers = {"User-Agent": "WhoCord-OSINT/1.1", "hibp-api-key": hibp_api_key, "Accept": "application/json"}
@@ -132,19 +134,20 @@ async def email_leak(ctx, email: str):
             if r.status_code == 200:
                 data = r.json()
                 if isinstance(data, list):
-                    leaks = [b.get("Name", str(b)) for b in data]
+                    breaches = [b.get("Name", str(b)) for b in data]
         
-        r2 = requests.get(EMAIL_API_URL.format(email=email), timeout=5)
+        r2 = requests.get(XPOSED_API_URL.format(email=email), timeout=5)
         if r2.status_code == 200:
             data2 = r2.json()
             if "breaches" in data2 and data2["breaches"]:
                 for b in data2["breaches"]:
                     b_str = str(b)
-                    if b_str not in leaks:
-                        leaks.append(b_str)
+                    if b_str not in breaches:
+                        breaches.append(b_str)
     except Exception:
         pass
 
+    # 2. EmailRep İtibar Taraması
     try:
         r = requests.get(f"https://emailrep.io/{email}", headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
         if r.status_code == 200:
@@ -152,6 +155,7 @@ async def email_leak(ctx, email: str):
     except Exception:
         pass
 
+    # 3. Gravatar Profil ve Görsel Kontrolü
     try:
         email_hash = hashlib.md5(email.encode()).hexdigest()
         g_url = f"https://www.gravatar.com/avatar/{email_hash}?d=404&s=200"
@@ -161,26 +165,51 @@ async def email_leak(ctx, email: str):
     except Exception:
         pass
 
+    # 4. Holehe Tarama Mantığı (Popüler Servislerde E-Posta Varlık Kontrolü)
+    check_platforms = {
+        "Twitter / X": f"https://api.twitter.com/i/users/email_available.json?email={email}",
+        "Spotify": f"https://spclient.wg.spotify.com/signup/public/v1/account?email={email}",
+        "Imgur": f"https://api.imgur.com/3/account/email_available?email={email}",
+        "Adobe": f"https://auth.adobe.io/v2/users/emails?email={email}",
+        "Atlassian": f"https://id.atlassian.com/rest/check-email?email={email}"
+    }
+    
+    headers_h = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    for p_name, p_url in check_platforms.items():
+        try:
+            resp = requests.get(p_url, headers=headers_h, timeout=3)
+            # Holehe mantığına benzer hızlı durum analizi
+            if resp.status_code in [200, 400, 409]: 
+                holehe_detected.append(p_name)
+        except Exception:
+            continue
+
+    # Discord Embed Raporu
     embed = discord.Embed(
-        title="📧 `NULLL- INTELLIGENCE` | Ultra E-Posta Analizi",
-        description=f"> **Sorgulanan E-Posta:** `{email}`",
-        color=discord.Color.red() if leaks or emailrep_data.get("reputation") == "low" else discord.Color.green()
+        title="📧 `WhoCord / NULLL` | Kapsamlı E-Posta İstihbaratı",
+        description=f"> **Hedef E-Posta:** `{email}`",
+        color=discord.Color.red() if breaches or emailrep_data.get("reputation") == "low" else discord.Color.green()
     )
     
-    if leaks:
-        embed.add_field(name="⚠️ Tespit Edilen Veri İhlalleri (Sızıntı)", value=f"```text\n" + "\n".join([f"• {l}" for l in leaks[:10]]) + "\n```", inline=False)
+    if breaches:
+        embed.add_field(name="⚠️ Tespit Edilen Veri İhlalleri", value=f"```text\n" + "\n".join([f"• {b}" for b in breaches[:8]]) + "\n```", inline=False)
     else:
-        embed.add_field(name="✅ Sızıntı Durumu", value="`Herhangi bir veri ihlali bulunamadı (Temiz).`", inline=False)
+        embed.add_field(name="✅ Veri İhlali", value="`Kayıtlı veri sızıntısı bulunamadı.`", inline=False)
+
+    if holehe_detected:
+        embed.add_field(name="🔍 Holehe / Servis Tespiti (Kayıtlı Oldu Yerler)", value=f"`" + ", ".join(holehe_detected) + "`", inline=False)
+    else:
+        embed.add_field(name="🔍 Holehe / Servis Tespiti", value="`Test edilen ana servislerde kayıt bulunamadı.`", inline=False)
         
     rep = emailrep_data.get("reputation", "Bilinmiyor")
     suspicious = emailrep_data.get("suspicious", False)
-    embed.add_field(name="🛡️ EmailRep İtibar Skoru", value=f"`{str(rep).upper()}` | Şüpheli: `{'Evet' if suspicious else 'Hayır'}`", inline=False)
+    embed.add_field(name="🛡️ EmailRep İtibar", value=f"`{str(rep).upper()}` | Şüpheli: `{'Evet' if suspicious else 'Hayır'}`", inline=False)
 
     if gravatar_url:
-        embed.add_field(name="🖼️ Gravatar Profil Görseli", value=f"[Görseli Aç ↗]({gravatar_url})", inline=False)
+        embed.add_field(name="🖼️ Gravatar Profil", value=f"[Görseli Aç ↗]({gravatar_url})", inline=False)
         embed.set_thumbnail(url=gravatar_url)
 
-    embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+    embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • WhoCord Email Suite", icon_url=ctx.author.display_avatar.url)
     await ctx.respond(embed=embed)
 
 @bot.slash_command(name="phone-sorgu", description="NULLL- INTELLIGENCE - Telefon Numarası İstihbarat Analizi", **USER_INSTALL_CONFIG)
@@ -220,7 +249,7 @@ async def username_check(ctx, username: str):
         "Twitch": f"https://www.twitch.tv/{username}"
     }
     
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     found = []
     for name, url in platforms.items():
         try:
@@ -265,21 +294,4 @@ async def url_analysis(ctx, target_url: str):
     except Exception as e:
         await ctx.respond(f"❌ **Bağlantı Hatası:** `{e}`", ephemeral=True)
 
-@bot.slash_command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres Harita Sorgulama", **USER_INSTALL_CONFIG)
-async def adres_sorgu(ctx, adres: str):
-    await ctx.defer()
-    maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(adres)}"
-    
-    embed = discord.Embed(title="📍 `NULLL- INTELLIGENCE` | Adres & Harita Sorgu", color=DARK_COLOR)
-    embed.add_field(name="🏢 Aranan Adres", value=f"```text\n{adres}\n```", inline=False)
-    embed.add_field(name="🗺️ Harita Bağlantısı", value=f"[Google Maps üzerinde Aç ↗]({maps_url})", inline=False)
-    embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
-    
-    await ctx.respond(embed=embed)
-
-if __name__ == "__main__":
-    if not BOT_TOKEN:
-        print("HATA: DISCORD_TOKEN çevre değişkeni bulunamadı!")
-    else:
-        keep_alive()
-        bot.run(BOT_TOKEN)
+@bot.slash_command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres
