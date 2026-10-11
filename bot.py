@@ -29,7 +29,7 @@ def keep_alive():
     t = Thread(target=run_flask, daemon=True)
     t.start()
 
-# Dinamik Modül Yükleyici (Tüm alt klasörleri tarar)
+# Dinamik Modül Yükleyici (Tüm alt klasörleri ve modülleri tarar)
 LOADED_MODULES = {}
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -89,17 +89,13 @@ async def ara(interaction: discord.Interaction, user_id: str):
     except Exception as e:
         await interaction.followup.send(f"❌ **Hata:** `{e}`", ephemeral=True)
 
-# 2. E-Posta İstihbarat Analizi (EmailInvestigationStage / Holehe / HIBP vb.)
+# 2. E-Posta İstihbarat Analizi (EmailInvestigationStage / Holehe / HIBP)
 @bot.tree.command(name="email", description="NULLL-INTELLIGENCE - Derin E-Posta Sızıntı ve Servis Taraması")
 async def email_check(interaction: discord.Interaction, email: str):
     await interaction.response.defer()
     try:
-        # EmailInvestigationStage veya email_intel modüllerini tetikle
         results_summary = []
         for mod_name, mod in LOADED_MODULES.items():
-            if hasattr(mod, "EmailInvestigationStage"):
-                # Sahne mantığını simüle edilmiş bağlamla çalıştırabiliriz
-                pass
             if hasattr(mod, "check_hibp"):
                 try:
                     hibp = mod.check_hibp(email)
@@ -219,4 +215,28 @@ async def ip_lookup(interaction: discord.Interaction, ip_address: str):
             embed.add_field(name="🏳️ Ülke", value=f"`{res.get('country')} ({res.get('countryCode')})`", inline=True)
             embed.add_field(name="📍 Bölge", value=f"`{res.get('regionName', 'N/A')}`", inline=True)
             embed.add_field(name="🏙️ Şehir", value=f"`{res.get('city', 'N/A')}`", inline=True)
-            embed.add_field(name="📮 Posta Kodu", value=f"`{res.get('zip', 'N/
+            embed.add_field(name="📮 Posta Kodu", value=f"`{res.get('zip', 'N/A')}`", inline=True)
+            embed.add_field(name="🕒 Zaman Dilimi", value=f"`{res.get('timezone', 'N/A')}`", inline=True)
+            
+            embed.add_field(name="📡 İnternet Servis Sağlayıcı (ISP)", value=f"```text\n{res.get('isp', 'N/A')}\n```", inline=False)
+            embed.add_field(name="🏢 Organizasyon / AS", value=f"```text\n{res.get('org', 'N/A')} ({res.get('as', 'N/A')})\n```", inline=False)
+            embed.add_field(name="🛡️ Proxy / VPN Tespiti", value="`Evet (Riskli)`" if res.get('proxy') else "`Hayır (Temiz)`", inline=False)
+            
+            lat, lon = res.get("lat"), res.get("lon")
+            if lat and lon:
+                maps_url = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+                embed.add_field(name="🗺️ Coğrafi Konum", value=f"[Google Maps üzerinde Aç ↗]({maps_url})", inline=False)
+
+            embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL-INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
+            await interaction.followup.send(embed=embed)
+        else:
+            await interaction.followup.send("❌ **Hata:** Geçersiz IP adresi!", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ **Hata:** `{e}`", ephemeral=True)
+
+if __name__ == "__main__":
+    if not BOT_TOKEN:
+        print("HATA: DISCORD_TOKEN çevre değişkeni bulunamadı!")
+    else:
+        keep_alive()
+        bot.run(BOT_TOKEN)
