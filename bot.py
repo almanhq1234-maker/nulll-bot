@@ -268,4 +268,18 @@ async def url_analysis(ctx, target_url: str):
 @bot.slash_command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres Harita Sorgulama", **USER_INSTALL_CONFIG)
 async def adres_sorgu(ctx, adres: str):
     await ctx.defer()
-    maps_url = f"
+    maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(adres)}"
+    
+    embed = discord.Embed(title="📍 `NULLL- INTELLIGENCE` | Adres & Harita Sorgu", color=DARK_COLOR)
+    embed.add_field(name="🏢 Aranan Adres", value=f"```text\n{adres}\n```", inline=False)
+    embed.add_field(name="🗺️ Harita Bağlantısı", value=f"[Google Maps üzerinde Aç ↗]({maps_url})", inline=False)
+    embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+    
+    await ctx.respond(embed=embed)
+
+if __name__ == "__main__":
+    if not BOT_TOKEN:
+        print("HATA: DISCORD_TOKEN çevre değişkeni bulunamadı!")
+    else:
+        keep_alive()
+        bot.run(BOT_TOKEN)
