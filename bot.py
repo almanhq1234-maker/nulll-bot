@@ -437,4 +437,392 @@ class SearchModal(Modal):
                 await interaction.followup.send("An error occurred while processing your request. Please try again later.")
                 return
 
-            reversed_results = list(
+            reversed_results = list(reversed(full_results["results"]))
+            paginator_view = PaginatorView(reversed_results, term, self.search_type)
+            self.paginator_view = paginator_view  
+            content = format_breaches(term, self.search_type, {"results": reversed_results[:paginator_view.page_size]})
+            message = await interaction.followup.send(content=content, view=paginator_view)
+            paginator_view.message = message
+
+            csv_filename, pdf_filename = await self.generate_reports(reversed_results)
+            if csv_filename and pdf_filename:
+                await self.send_reports(interaction, csv_filename, pdf_filename, term, interaction.user.display_name)
+
+        except Exception as e:
+            logging.error(f"An unexpected error occurred: {e}")
+            await interaction.followup.send("An unexpected error occurred. Please try again later.")
+
+    async def send_webhook_message(self, user, term, interaction, guild):
+        webhook_url = config.get("webhook_url")
+        if not webhook_url:
+            return
+        user_avatar_url = user.avatar.url if user.avatar else None
+        embed_content = self.construct_embed(user, term, guild, user_avatar_url)
+        webhook_data = {
+            "content": None,
+            "username": "NULL Bot",
+            "embeds": [embed_content],
+        }
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                response = await session.post(webhook_url, json=webhook_data)
+                if response.status != 204:
+                    logging.error(f"Webhook failed with status code {response.status}")
+            except Exception as e:
+                logging.error(f"An error occurred while sending the webhook message: {e}")
+
+    def construct_embed(self, user, term, guild, avatar_url):
+        server_info = f"**Name:** {guild.name}\n**Members:** {guild.member_count}" if guild else "Direct Message"
+        return {
+            "title": "🔍 NULL | New Search Performed",
+            "description": f"**User:** {user}\n**Term:** `{term}`",
+            "color": 3447003,
+            "fields": [{"name": "Server or DM", "value": server_info, "inline": False}],
+            "thumbnail": {"url": avatar_url},
+            "footer": {"text": f"{user} initiated • NULL", "icon_url": avatar_url},
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    async def generate_reports(self, results):
+        try:
+            csv_filename = create_csv_file(results, "full_results")
+            pdf_filename = create_pdf_from_csv(csv_filename, "full_results") if csv_filename else None
+            return csv_filename, pdf_filename
+        except Exception as e:
+            logging.error(f"Error generating reports: {e}")
+            return None, None
+
+    async def send_reports(self, interaction, csv_filename, pdf_filename, term, username):
+        try:
+            if csv_filename:
+                await interaction.followup.send("Here's the full report in CSV format:", file=discord.File(csv_filename))
+            if pdf_filename:
+                await interaction.followup.send("Here's the full report in PDF format:", file=discord.File(pdf_filename))
+            await interaction.followup.send(f"Finished searching `{term}` for `{username}`")
+            await asyncio.gather(
+                attempt_delete_with_retries(csv_filename),
+                attempt_delete_with_retries(pdf_filename)
+            )
+        except Exception as e:
+            logging.error(f"Error sending reports: {e}")
+
+
+class SearchButton(Button):
+    def __init__(self, label, search_type, bot):
+        super().__init__(label=label, style=ButtonStyle.primary)
+        self.search_type = search_type
+        self.bot = bot
+
+    async def callback(self, interaction):
+        await self.view.disable_all_buttons()
+        modal = SearchModal(search_type=self.search_type, bot=self.bot)
+        await interaction.response.send_modal(modal)
+
+class SpacerButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(style=discord.ButtonStyle.secondary, label="\u200b", disabled=True)
+
+class SearchTypeView(discord.ui.View):
+    def __init__(self, bot, timeout=30):
+        super().__init__(timeout=timeout)
+        self.bot = bot
+        self.add_buttons()
+
+    def add_buttons(self):
+        types = ["Email", "Password", "Username", "Full Name", "IP Address", "Phone Number", "Hash", "Domain"]
+        for i, t in enumerate(types):
+            if i > 0:
+                self.add_item(SpacerButton())
+            self.add_item(SearchButton(label=f"Search by {t}", search_type=t.lower(), bot=self.bot))
+
+    async def disable_all_buttons(self):
+        for item in self.children:
+            if isinstance(item, Button):
+                item.disabled = True
+        try:
+            await self.message.edit(view=self)  
+        except Exception as e:
+            print(f"Failed to update view: {str(e)}")
+
+    async def on_timeout(self):
+        await self.disable_all_buttons()
+
+
+@discord.app_commands.command(name="hackcheck", description="Search for data breaches.")
+async def check_breach_command(interaction: discord.Interaction):
+    view = SearchTypeView(interaction.client)
+    await interaction.response.send_message("Please select a search type:", view=view, ephemeral=True)
+    view.message = await interaction.original_response()
+
+
+class Bot(discord.Client):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tree = discord.app_commands.CommandTree(self)
+        self.discord_message_limit = 2000
+
+    async def setup_hook(self):
+        self.tree.add_command(check_breach_command)
+
+    async def on_ready(self):
+        # Bot açıldığında Render IP'sini otomatik olarak Hackcheck'e kaydettiriyoruz
+        await register_render_ip()
+
+        for guild in self.guilds:
+            try:
+                owner = await guild.fetch_member(guild.owner_id)
+                owner_name = f"{owner.name}#{owner.discriminator}"
+            except Exception as e:
+                logging.error(f"Could not fetch owner for guild: {guild.name}, error: {e}")
+                owner_name = "Could not fetch owner"
+            
+            logging.info(f" - {guild.name} (Owner: {owner_name})")
+
+        server_count = len(self.guilds)
+        activity_text = f"/hackcheck on {server_count} servers"
+        await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=activity_text))
+        await self.tree.sync()
+
+        logging.info(f"NULL Bot {self.user} is ready and running in {len(self.guilds)} servers.")
+
+    async def on_guild_join(self, guild):
+        if config.get("webhook_url"):
+            await self.send_webhook_message_for_guild(guild)
+
+    async def send_webhook_message_for_guild(self, guild):
+        webhook_url = config.get("webhook_url")  
+        if not webhook_url:
+            return
+        target_guild_id = 'YOUR-GUILD-ID'
+        target_channel_id = 'YOUR-CHANNEL-ID'
+
+        try:
+            owner = await guild.fetch_member(guild.owner_id)
+        except discord.NotFound:
+            owner = await self.fetch_user(guild.owner_id)
+            owner_info = f"{owner} (Fetched as User)"
+        except Exception as e:
+            logging.error(f"Failed to fetch guild owner for {guild.name} (ID: {guild.id}): {e}")
+            owner_info = "Owner information unavailable"
+        else:
+            owner_info = str(owner)
+
+        embed = {
+            "title": "🤖 NULL | Bot Added to Server",
+            "description": "The bot has been added to a new server!",
+            "color": 3066993,  
+            "fields": [
+                {
+                    "name": "🌐 Server Name",
+                    "value": guild.name,
+                    "inline": False
+                },
+                {
+                    "name": "🆔 Server ID",
+                    "value": str(guild.id),
+                    "inline": False
+                },
+                {
+                    "name": "👑 Owner",
+                    "value": f"{owner_info} (ID: {guild.owner_id})",
+                    "inline": False
+                },
+                {
+                    "name": "👥 Member Count",
+                    "value": str(guild.member_count),
+                    "inline": False
+                },
+                {
+                    "name": "🎭 Role Count",
+                    "value": str(len(guild.roles)),
+                    "inline": False
+                },
+                {
+                    "name": "💬 Channel Count",
+                    "value": (f"Text: {len([c for c in guild.channels if isinstance(c, discord.TextChannel)])}, "
+                              f"Voice: {len([c for c in guild.channels if isinstance(c, discord.VoiceChannel)])}, "
+                              f"Categories: {len(guild.categories)}"),
+                    "inline": False
+                },
+                {
+                    "name": "📅 Server Creation Date",
+                    "value": guild.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    "inline": False
+                },
+            ],
+            "footer": {
+                "text": f"NULL Bot is now in {len(self.guilds)} servers"
+            }
+        }
+
+        server_avatar_url = guild.icon.url if guild.icon else None
+        if server_avatar_url:
+            embed["thumbnail"] = {"url": server_avatar_url}
+
+        try:
+            server_region = str(guild.region)
+        except AttributeError:
+            server_region = "Server region information not available."
+
+        embed["fields"].append({
+            "name": "🌍 Server Region",
+            "value": server_region,
+            "inline": False
+        })
+
+        emoji_line = " ".join(str(emoji) for emoji in guild.emojis)
+        embed["fields"].append({
+            "name": "😃 Server Emojis",
+            "value": emoji_line if emoji_line else "No custom emojis",
+            "inline": False
+        })
+
+        current_server_count = len(self.guilds)  
+        webhook_data = {
+            "username": "NULL Server Count Update",
+            "embeds": [embed],
+        }
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.post(webhook_url, json=webhook_data) as response:
+                    if response.status == 204:
+                        logging.info(f"New server join: {guild.name}, owned by {owner_info}. Total servers: {current_server_count}")
+                    else:
+                        logging.error(f"Webhook for new server join failed with status code {response.status} for {guild.name}")
+            except Exception as e:
+                logging.error(f"Error sending webhook for new server join: {e}")
+
+        target_guild = self.get_guild(int(target_guild_id)) if target_guild_id.isdigit() else None
+        if target_guild:
+            target_channel = target_guild.get_channel(int(target_channel_id)) if target_channel_id.isdigit() else None
+            if target_channel:
+                await target_channel.send(embed=discord.Embed.from_dict(embed))
+
+        channel_names = [f"- {channel.name}" for channel in guild.channels]
+        channel_names_str = "\n".join(channel_names)
+        await self.send_discord_webhook_message(webhook_url, f"📺 **Channel Names:**\n{channel_names_str}")
+
+        member_names = [f"- {member.display_name}" for member in guild.members]
+        member_names_str = "\n".join(member_names)
+        max_length = 1900  
+        if len(member_names_str) > max_length:
+            parts = [member_names_str[i:i+max_length] for i in range(0, len(member_names_str), max_length)]
+            for i, part in enumerate(parts):
+                header = f"👥 **Member Names (Part {i+1}/{len(parts)}):**\n"
+                await self.send_discord_webhook_message(webhook_url, header + part)
+        else:
+            await self.send_discord_webhook_message(webhook_url, f"👥 **Member Names:**\n{member_names_str}")
+
+    async def send_discord_webhook_message(self, webhook_url, content):
+        if not webhook_url:
+            return
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.post(webhook_url, json={"content": content}) as response:
+                    if response.status != 204:
+                        logging.error(f"Failed to send Discord webhook message. Status code: {response.status}")
+            except Exception as e:
+                logging.error(f"Error sending Discord webhook message: {e}")
+
+    async def on_error(self, event_method, *args, **kwargs):
+        error_type, error_instance, traceback_info = sys.exc_info()
+        logging.error(f"Unhandled exception in {event_method}: {error_type.__name__}: {error_instance}")
+        logging.error(traceback.format_exc())
+
+        if isinstance(error_instance, aiohttp.client_exceptions.ClientConnectorError):
+            logging.info("Detected a connection issue, attempting to reconnect...")
+            await asyncio.sleep(5)  
+            try:
+                logging.info("Reconnection attempt successful.")
+            except Exception as reconnection_error:
+                logging.error(f"Failed to reconnect: {reconnection_error}")
+
+        elif isinstance(error_instance, discord.errors.NotFound) and error_instance.code == 10062:
+            logging.warning(f"Unknown interaction error occurred in {event_method}. Error: {error_instance}")
+
+        else:
+            channel = None
+            for arg in args:
+                if isinstance(arg, discord.Message):
+                    channel = arg.channel
+                    break
+                elif hasattr(arg, 'channel'):
+                    channel = arg.channel
+                    break
+
+            if channel:
+                try:
+                    await channel.send("Oops! It seems like there was an issue. Don't worry, I'm still here! If the problem persists, please contact support.")
+                except discord.DiscordException:
+                    logging.error("Failed to send an error message to the channel.")
+
+    async def send_split_messages(self, interaction, message: str, require_response=True):
+        if not message.strip():
+            logging.warning("Attempted to send an empty message.")
+            return
+
+        query = ""
+        for option in interaction.data.get("options", []):
+            if option.get("name") == "query":
+                query = option.get("value", "")
+                break
+
+        prepend_text = ""
+        if query:
+            prepend_text = f"Query: {query}\n\n"
+
+        lines = message.split("\n")
+        chunks = []
+        current_chunk = ""
+
+        if prepend_text:
+            current_chunk += prepend_text
+
+        for line in lines:
+            while len(line) > self.discord_message_limit:
+                sub_line = line[:self.discord_message_limit]
+                if len(current_chunk) + len(sub_line) + 1 > self.discord_message_limit:
+                    chunks.append(current_chunk)
+                    current_chunk = ""
+                current_chunk += sub_line + "\n"
+                line = line[self.discord_message_limit:]
+
+            if len(current_chunk) + len(line) + 1 > self.discord_message_limit:
+                chunks.append(current_chunk)
+                current_chunk = line + "\n"
+            else:
+                current_chunk += line + "\n"
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        if not chunks:
+            logging.warning("No chunks generated from the message.")
+            return
+
+        if require_response and not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=False)
+
+        try:
+            await interaction.followup.send(content=chunks[0], ephemeral=False)
+            chunks = chunks[1:]  
+        except Exception as e:
+            logging.error(f"Failed to send the first chunk via followup. Error: {e}")
+
+        for chunk in chunks:
+            try:
+                await interaction.followup.send(content=chunk, ephemeral=False)
+            except Exception as e:
+                logging.error(f"Failed to send subsequent chunk via followup. Error: {e}")
+
+
+if __name__ == "__main__":
+    keep_alive()
+    token = config.get("discord_token")
+    if token:
+        bot = Bot(intents=discord.Intents.default())
+        bot.run(token)
+    else:
+        logging.error("Discord token bulunamadı! Lütfen environment değişkenlerini kontrol edin.")
