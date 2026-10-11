@@ -341,7 +341,6 @@ async def phone_lookup(interaction: discord.Interaction, phone_number: str):
 async def username_check(interaction: discord.Interaction, username: str):
     await interaction.response.defer()
     
-    # Bloklanmayı önlemek için iş yükü ve timeout optimize edildi
     hits = await run_wmn_scan(username, max_workers=15, timeout=3)
 
     embed = discord.Embed(
@@ -397,4 +396,21 @@ async def url_analysis(interaction: discord.Interaction, target_url: str):
     except Exception as e:
         await interaction.followup.send(f"❌ **Bağlantı Hatası:** `{e}`", ephemeral=True)
 
-@bot.tree.command(name="adres-sorgu",
+@bot.tree.command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres Harita Sorgulama")
+async def adres_sorgu(interaction: discord.Interaction, adres: str):
+    await interaction.response.defer()
+    maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(adres)}"
+    
+    embed = discord.Embed(title="📍 `NULLL- INTELLIGENCE` | Adres & Harita Sorgu", color=DARK_COLOR)
+    embed.add_field(name="🏢 Aranan Adres", value=f"```text\n{adres}\n```", inline=False)
+    embed.add_field(name="🗺️ Harita Bağlantısı", value=f"[Google Maps üzerinde Aç ↗]({maps_url})", inline=False)
+    embed.set_footer(text=f"Sorgulayan: {interaction.user.name} • NULLL- INTELLIGENCE", icon_url=interaction.user.display_avatar.url)
+    
+    await interaction.followup.send(embed=embed)
+
+if __name__ == "__main__":
+    if not BOT_TOKEN:
+        print("HATA: DISCORD_TOKEN çevre değişkeni bulunamadı!")
+    else:
+        keep_alive()
+        bot.run(BOT_TOKEN)
