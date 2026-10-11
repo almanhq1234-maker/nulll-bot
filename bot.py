@@ -1,7 +1,10 @@
-# =====================================================================
-# Hackcheck - Data breach searching Discord Bot - by Crypta
-# Render 24/7 Keep-Alive Entegrasyonu ve Akıllı Config Desteği ile
-# =====================================================================
+#  _  _ _  _ _    _    
+#  |\ | |  | |    |    
+#  | \| |__| |___ |___ 
+#
+# NULL - Data breach searching Discord Bot 
+# https://github.com/RocketGod-git/hackcheck-data-breach-search-discord-bot
+
 
 import asyncio
 import json
@@ -12,14 +15,13 @@ import os
 import io
 import traceback
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from xml.sax.saxutils import escape
 from threading import Thread
 from flask import Flask
 
 import discord
-from discord.ui import Modal, TextInput
-from discord.ui import Button, View
+from discord.ui import Modal, TextInput, Button, View
 from discord import ButtonStyle
 
 import aiohttp
@@ -44,7 +46,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Hackcheck Discord Bot 24/7 Aktif!", 200
+    return "NULL Hackcheck Discord Bot 24/7 Aktif!", 200
 
 @app.route('/health')
 def health():
@@ -71,6 +73,7 @@ logging.basicConfig(
 )
 logging.getLogger('discord').setLevel(logging.WARNING)
 
+
 timeout = ClientTimeout(total=120)
 retry_attempts = 3
 backoff_factor = 0.5
@@ -85,7 +88,7 @@ def load_config():
     except Exception as e:
         logging.warning(f"config.json okunamadı: {e}")
 
-    # config.json içerisindeki değerler boş veya sahte yer tutucuysa Render Environment'a geç
+    # config.json içinde placeholder varsa veya boşsa Render Environment değişkenlerine başvurur
     token = file_config.get("discord_token")
     if not token or token == "DISCORD_BOT_TOKENINIZ":
         token = os.getenv("DISCORD_TOKEN", "")
@@ -175,15 +178,15 @@ def create_pdf_from_csv(csv_filename, filename_prefix="results"):
 
     pdf = SimpleDocTemplate(pdf_filename, pagesize=landscape(elevenSeventeen))
 
-    usable_width = landscape(elevenSeventeen)[0] - 2 * 72  
-    column_widths = [usable_width * 0.19,  
-                     usable_width * 0.10,  
-                     usable_width * 0.10,  
-                     usable_width * 0.10,  
-                     usable_width * 0.08,  
-                     usable_width * 0.08,  
-                     usable_width * 0.20,  
-                     usable_width * 0.15]  
+    usable_width = landscape(elevenSeventeen)[0] - 2 * 72  # 1 inch margins on each side
+    column_widths = [usable_width * 0.19,  # email
+                     usable_width * 0.10,  # password
+                     usable_width * 0.10,  # full_name
+                     usable_width * 0.10,  # username
+                     usable_width * 0.08,  # ip_address
+                     usable_width * 0.08,  # phone_number
+                     usable_width * 0.20,  # hash (remaining space)
+                     usable_width * 0.15]  # source
 
     table = Table(data, colWidths=column_widths, repeatRows=1)
 
@@ -287,7 +290,7 @@ async def make_hackcheck_request(search_type, term, max_pages=75):
     api_key = config.get("hackcheck_api_key", "")
     all_results = []
     offset = 0
-    limit = 75  
+    limit = 75  # Adjust the limit as needed
     page_count = 0
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -403,7 +406,7 @@ class SearchModal(Modal):
 
         if config.get("webhook_url"):
             asyncio.create_task(self.send_webhook_message(interaction.user, term, interaction, interaction.guild))
-            
+        
         await interaction.response.defer(ephemeral=False)
         asyncio.create_task(self.process_search(interaction, term))
         
@@ -440,7 +443,7 @@ class SearchModal(Modal):
         embed_content = self.construct_embed(user, term, guild, user_avatar_url)
         webhook_data = {
             "content": None,
-            "username": "HackCheck Bot",
+            "username": "NULL Bot",
             "embeds": [embed_content],
         }
 
@@ -455,12 +458,12 @@ class SearchModal(Modal):
     def construct_embed(self, user, term, guild, avatar_url):
         server_info = f"**Name:** {guild.name}\n**Members:** {guild.member_count}" if guild else "Direct Message"
         return {
-            "title": "🔍 New Search Performed",
+            "title": "🔍 NULL | New Search Performed",
             "description": f"**User:** {user}\n**Term:** `{term}`",
             "color": 3447003,
             "fields": [{"name": "Server or DM", "value": server_info, "inline": False}],
             "thumbnail": {"url": avatar_url},
-            "footer": {"text": f"{user} initiated", "icon_url": avatar_url},
+            "footer": {"text": f"{user} initiated • NULL", "icon_url": avatar_url},
             "timestamp": datetime.utcnow().isoformat()
         }
 
@@ -494,4 +497,319 @@ class SearchButton(Button):
         self.search_type = search_type
         self.bot = bot
 
-    async def callback(self, interaction
+    async def callback(self, interaction):
+        await self.view.disable_all_buttons()
+        modal = SearchModal(search_type=self.search_type, bot=self.bot)
+        await interaction.response.send_modal(modal)
+
+class SpacerButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(style=discord.ButtonStyle.secondary, label="\u200b", disabled=True)
+
+class SearchTypeView(discord.ui.View):
+    def __init__(self, bot, timeout=30):
+        super().__init__(timeout=timeout)
+        self.bot = bot
+        self.add_buttons()
+
+    def add_buttons(self):
+        types = ["Email", "Password", "Username", "Full Name", "IP Address", "Phone Number", "Hash", "Domain"]
+        for i, t in enumerate(types):
+            if i > 0:
+                self.add_item(SpacerButton())
+            self.add_item(SearchButton(label=f"Search by {t}", search_type=t.lower(), bot=self.bot))
+
+    async def disable_all_buttons(self):
+        for item in self.children:
+            if isinstance(item, Button):
+                item.disabled = True
+        try:
+            await self.message.edit(view=self)  
+        except Exception as e:
+            print(f"Failed to update view: {str(e)}")
+
+    async def on_timeout(self):
+        await self.disable_all_buttons()
+
+
+@discord.app_commands.command(name="hackcheck", description="Search for data breaches.")
+async def check_breach_command(interaction: discord.Interaction):
+    view = SearchTypeView(interaction.client)
+    await interaction.response.send_message("Please select a search type:", view=view, ephemeral=True)
+    view.message = await interaction.original_response()
+
+
+class Bot(discord.Client):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tree = discord.app_commands.CommandTree(self)
+        self.discord_message_limit = 2000
+
+    async def setup_hook(self):
+        self.tree.add_command(check_breach_command)
+
+    async def on_ready(self):
+        for guild in self.guilds:
+            try:
+                owner = await guild.fetch_member(guild.owner_id)
+                owner_name = f"{owner.name}#{owner.discriminator}"
+            except Exception as e:
+                logging.error(f"Could not fetch owner for guild: {guild.name}, error: {e}")
+                owner_name = "Could not fetch owner"
+            
+            logging.info(f" - {guild.name} (Owner: {owner_name})")
+
+        server_count = len(self.guilds)
+        activity_text = f"/hackcheck on {server_count} servers"
+        await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=activity_text))
+        await self.tree.sync()
+
+        logging.info(f"NULL Bot {self.user} is ready and running in {len(self.guilds)} servers.")
+
+    async def on_guild_join(self, guild):
+        if config.get("webhook_url"):
+            await self.send_webhook_message_for_guild(guild)
+
+    async def send_webhook_message_for_guild(self, guild):
+        webhook_url = config.get("webhook_url")  
+        if not webhook_url:
+            return
+        target_guild_id = 'YOUR-GUILD-ID'
+        target_channel_id = 'YOUR-CHANNEL-ID'
+
+        try:
+            owner = await guild.fetch_member(guild.owner_id)
+        except discord.NotFound:
+            owner = await self.fetch_user(guild.owner_id)
+            owner_info = f"{owner} (Fetched as User)"
+        except Exception as e:
+            logging.error(f"Failed to fetch guild owner for {guild.name} (ID: {guild.id}): {e}")
+            owner_info = "Owner information unavailable"
+        else:
+            owner_info = str(owner)
+
+        embed = {
+            "title": "🤖 NULL | Bot Added to Server",
+            "description": "The bot has been added to a new server!",
+            "color": 3066993,  
+            "fields": [
+                {
+                    "name": "🌐 Server Name",
+                    "value": guild.name,
+                    "inline": False
+                },
+                {
+                    "name": "🆔 Server ID",
+                    "value": str(guild.id),
+                    "inline": False
+                },
+                {
+                    "name": "👑 Owner",
+                    "value": f"{owner_info} (ID: {guild.owner_id})",
+                    "inline": False
+                },
+                {
+                    "name": "👥 Member Count",
+                    "value": str(guild.member_count),
+                    "inline": False
+                },
+                {
+                    "name": "🎭 Role Count",
+                    "value": str(len(guild.roles)),
+                    "inline": False
+                },
+                {
+                    "name": "💬 Channel Count",
+                    "value": (f"Text: {len([c for c in guild.channels if isinstance(c, discord.TextChannel)])}, "
+                              f"Voice: {len([c for c in guild.channels if isinstance(c, discord.VoiceChannel)])}, "
+                              f"Categories: {len(guild.categories)}"),
+                    "inline": False
+                },
+                {
+                    "name": "📅 Server Creation Date",
+                    "value": guild.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    "inline": False
+                },
+            ],
+            "footer": {
+                "text": f"NULL Bot is now in {len(self.guilds)} servers"
+            }
+        }
+
+        server_avatar_url = guild.icon.url if guild.icon else None
+        if server_avatar_url:
+            embed["thumbnail"] = {"url": server_avatar_url}
+
+        try:
+            server_region = str(guild.region)
+        except AttributeError:
+            server_region = "Server region information not available."
+
+        embed["fields"].append({
+            "name": "🌍 Server Region",
+            "value": server_region,
+            "inline": False
+        })
+
+        emoji_line = " ".join(str(emoji) for emoji in guild.emojis)
+        embed["fields"].append({
+            "name": "😃 Server Emojis",
+            "value": emoji_line if emoji_line else "No custom emojis",
+            "inline": False
+        })
+
+        current_server_count = len(self.guilds)  
+        webhook_data = {
+            "username": "NULL Server Count Update",
+            "embeds": [embed],
+        }
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.post(webhook_url, json=webhook_data) as response:
+                    if response.status == 204:
+                        logging.info(f"New server join: {guild.name}, owned by {owner_info}. Total servers: {current_server_count}")
+                    else:
+                        logging.error(f"Webhook for new server join failed with status code {response.status} for {guild.name}")
+            except Exception as e:
+                logging.error(f"Error sending webhook for new server join: {e}")
+
+        target_guild = self.get_guild(int(target_guild_id)) if target_guild_id.isdigit() else None
+        if target_guild:
+            target_channel = target_guild.get_channel(int(target_channel_id)) if target_channel_id.isdigit() else None
+            if target_channel:
+                await target_channel.send(embed=discord.Embed.from_dict(embed))
+
+        channel_names = [f"- {channel.name}" for channel in guild.channels]
+        channel_names_str = "\n".join(channel_names)
+        await self.send_discord_webhook_message(webhook_url, f"📺 **Channel Names:**\n{channel_names_str}")
+
+        member_names = [f"- {member.display_name}" for member in guild.members]
+        member_names_str = "\n".join(member_names)
+        max_length = 1900  
+        if len(member_names_str) > max_length:
+            parts = [member_names_str[i:i+max_length] for i in range(0, len(member_names_str), max_length)]
+            for i, part in enumerate(parts):
+                header = f"👥 **Member Names (Part {i+1}/{len(parts)}):**\n"
+                await self.send_discord_webhook_message(webhook_url, header + part)
+        else:
+            await self.send_discord_webhook_message(webhook_url, f"👥 **Member Names:**\n{member_names_str}")
+
+    async def send_discord_webhook_message(self, webhook_url, content):
+        if not webhook_url:
+            return
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.post(webhook_url, json={"content": content}) as response:
+                    if response.status != 204:
+                        logging.error(f"Failed to send Discord webhook message. Status code: {response.status}")
+            except Exception as e:
+                logging.error(f"Error sending Discord webhook message: {e}")
+
+    async def on_error(self, event_method, *args, **kwargs):
+        error_type, error_instance, traceback_info = sys.exc_info()
+        logging.error(f"Unhandled exception in {event_method}: {error_type.__name__}: {error_instance}")
+        logging.error(traceback.format_exc())
+
+        if isinstance(error_instance, aiohttp.client_exceptions.ClientConnectorError):
+            logging.info("Detected a connection issue, attempting to reconnect...")
+            await asyncio.sleep(5)  
+            try:
+                logging.info("Reconnection attempt successful.")
+            except Exception as reconnection_error:
+                logging.error(f"Failed to reconnect: {reconnection_error}")
+
+        elif isinstance(error_instance, discord.errors.NotFound) and error_instance.code == 10062:
+            logging.warning(f"Unknown interaction error occurred in {event_method}. Error: {error_instance}")
+
+        else:
+            channel = None
+            for arg in args:
+                if isinstance(arg, discord.Message):
+                    channel = arg.channel
+                    break
+                elif hasattr(arg, 'channel'):
+                    channel = arg.channel
+                    break
+
+            if channel:
+                try:
+                    await channel.send("Oops! It seems like there was an issue. Don't worry, I'm still here! If the problem persists, please contact support.")
+                except discord.DiscordException:
+                    logging.error("Failed to send an error message to the channel.")
+
+    async def send_split_messages(self, interaction, message: str, require_response=True):
+        """Sends a message, and if it's too long for Discord, splits it."""
+        if not message.strip():
+            logging.warning("Attempted to send an empty message.")
+            return
+
+        query = ""
+        for option in interaction.data.get("options", []):
+            if option.get("name") == "query":
+                query = option.get("value", "")
+                break
+
+        prepend_text = ""
+        if query:
+            prepend_text = f"Query: {query}\n\n"
+
+        lines = message.split("\n")
+        chunks = []
+        current_chunk = ""
+
+        if prepend_text:
+            current_chunk += prepend_text
+
+        for line in lines:
+            while len(line) > self.discord_message_limit:
+                sub_line = line[:self.discord_message_limit]
+                if len(current_chunk) + len(sub_line) + 1 > self.discord_message_limit:
+                    chunks.append(current_chunk)
+                    current_chunk = ""
+                current_chunk += sub_line + "\n"
+                line = line[self.discord_message_limit:]
+
+            if len(current_chunk) + len(line) + 1 > self.discord_message_limit:
+                chunks.append(current_chunk)
+                current_chunk = line + "\n"
+            else:
+                current_chunk += line + "\n"
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        if not chunks:
+            logging.warning("No chunks generated from the message.")
+            return
+
+        if require_response and not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=False)
+
+        try:
+            await interaction.followup.send(content=chunks[0], ephemeral=False)
+            chunks = chunks[1:]  
+        except Exception as e:
+            logging.error(f"Failed to send the first chunk via followup. Error: {e}")
+
+        for chunk in chunks:
+            try:
+                await interaction.followup.send(content=chunk, ephemeral=False)
+            except Exception as e:
+                logging.error(f"Failed to send subsequent chunk via followup. Error: {e}")
+
+
+if __name__ == "__main__":
+    keep_alive()  # Render 24/7 web sunucusunu başlatır
+    
+    intents = discord.Intents.default()
+    intents.message_content = True
+    intents.members = True
+    
+    bot = Bot(intents=intents)
+    token = config.get("discord_token")
+    
+    if not token:
+        logging.critical("Discord token bulunamadı! Lütfen Render Environment değişkenlerini veya config.json dosyasını kontrol edin.")
+    else:
+        bot.run(token)
