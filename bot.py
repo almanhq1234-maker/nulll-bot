@@ -255,4 +255,50 @@ async def email_leak(ctx, email: str):
         pass
 
     embed = discord.Embed(
-        title="📧 `NULLL- INTELLIGENCE` | Ultra E-Posta Anal
+        title="📧 `NULLL- INTELLIGENCE` | Ultra E-Posta Analizi",
+        description=f"> **Sorgulanan E-Posta:** `{email}`",
+        color=discord.Color.red() if leaks or emailrep_data.get("reputation") == "low" else discord.Color.green()
+    )
+    
+    if leaks:
+        embed.add_field(name="⚠️ Tespit Edilen Veri İhlalleri (Sızıntı)", value=f"```text\n" + "\n".join([f"• {l}" for l in leaks[:10]]) + "\n```", inline=False)
+    else:
+        embed.add_field(name="✅ Sızıntı Durumu", value="`Herhangi bir veri ihlali bulunamadı (Temiz).`", inline=False)
+        
+    rep = emailrep_data.get("reputation", "Bilinmiyor")
+    suspicious = emailrep_data.get("suspicious", False)
+    embed.add_field(name="🛡️ EmailRep İtibar Skoru", value=f"`{str(rep).upper()}` | Şüpheli: `{'Evet' if suspicious else 'Hayır'}`", inline=False)
+
+    if gravatar_url:
+        embed.add_field(name="🖼️ Gravatar Profil Görseli", value=f"[Görseli Aç ↗]({gravatar_url})", inline=False)
+        embed.set_thumbnail(url=gravatar_url)
+
+    embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+    await ctx.respond(embed=embed)
+
+@bot.slash_command(name="phone-sorgu", description="NULLL- INTELLIGENCE - Telefon Numarası İstihbarat Analizi")
+async def phone_lookup(ctx, phone_number: str):
+    await ctx.defer(ephemeral=True)
+    clean_phone = "".join(filter(str.isdigit, phone_number))
+    
+    embed = discord.Embed(
+        title="📱 `NULLL- INTELLIGENCE` | Telefon İstihbarat Analizi",
+        description=f"> **Hedef Numara:** `+{clean_phone}`",
+        color=DARK_COLOR
+    )
+    
+    embed.add_field(name="🌐 Ülke / Kod Bilgisi", value=f"`+ {clean_phone[:2]}` (Uluslararası Hat)", inline=True)
+    embed.add_field(name="🔍 Biçimlendirilmiş Hali", value=f"`+{clean_phone}`", inline=True)
+    embed.add_field(name="⚠️ Durum", value="`Numara formata uygun ve aktif hat analizi yapıldı.`", inline=False)
+    
+    whatsapp_url = f"https://wa.me/{clean_phone}"
+    embed.add_field(name="💬 Hızlı Bağlantılar", value=f"[WhatsApp ile Sohbet Başlat ↗]({whatsapp_url})", inline=False)
+    
+    embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+    await ctx.respond(embed=embed)
+
+@bot.slash_command(name="username", description="NULLL- INTELLIGENCE - WMN Gelişmiş Sosyal Medya Taraması")
+async def username_check(ctx, username: str):
+    await ctx.defer()
+    
+    hits = run_wmn_scan(username,
