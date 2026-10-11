@@ -2,6 +2,10 @@ import datetime
 import os
 import urllib.parse
 import hashlib
+import json
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread
 from flask import Flask
 import discord
@@ -47,6 +51,107 @@ USER_INSTALL_CONFIG = {
         discord.InteractionContextType.private_channel
     }
 }
+
+# ──────────────────────────────────────────────────────────────────────
+# PLATFORMS REGISTRY (platforms.py entegrasyonu)
+# ──────────────────────────────────────────────────────────────────────
+PLATFORM_ICONS = {
+    "github": "🐙", "twitter": "🐦", "x": "🐦", "reddit": "🤖", "youtube": "▶️",
+    "instagram": "📸", "tiktok": "🎵", "facebook": "📘", "linkedin": "💼",
+    "pinterest": "📌", "snapchat": "👻", "twitch": "🎮", "steam": "🎮",
+    "gitlab": "🦊", "bitbucket": "🪣", "keybase": "🔑", "soundcloud": "🎵",
+    "medium": "✍️", "dev": "💻", "telegram": "✈️", "gravatar": "🌐",
+    "patreon": "🎨", "tumblr": "📝", "producthunt": "🚀", "hacknews": "🔶"
+}
+
+def get_platform_icon(site_name: str) -> str:
+    key = site_name.lower().strip()
+    for p, icon in PLATFORM_ICONS.items():
+        if p in key:
+            return icon
+    return "🟢"
+
+# ──────────────────────────────────────────────────────────────────────
+# WMN SCANNER MOTORU (wmn_scanner.py entegrasyonu)
+# ──────────────────────────────────────────────────────────────────────
+_WMN_URL = "https://raw.githubusercontent.com/WebBreacher/WhatsMyName/main/wmn-data.json"
+_cached_wmn_data = None
+_wmn_lock = threading.Lock()
+
+def _load_wmn_data():
+    global _cached_wmn_data
+    with _wmn_lock:
+        if _cached_wmn_data is not None:
+            return _cached_wmn_data
+        try:
+            resp = requests.get(_WMN_URL, headers={"User-Agent": "WhoCord-OSINT/1.1"}, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, dict) and "sites" in data:
+                    _cached_wmn_data = data
+                    return data
+        except Exception:
+            pass
+    return None
+
+def _is_hit(resp, site: dict) -> bool:
+    body = resp.text or ""
+    e_string = site.get("e_string") or ""
+    m_string = site.get("m_string") or ""
+    e_code = site.get("e_code")
+    m_code = site.get("m_code")
+
+    if m_code is not None and resp.status_code == m_code:
+        return False
+    if m_string and m_string in body:
+        return False
+    if e_string and e_string in body:
+        return True
+    if e_code is not None and resp.status_code == e_code:
+        return not e_string
+    return False
+
+def _probe_site(site: dict, username: str, timeout: int) -> dict | None:
+    method = str(site.get("request_method") or "GET").upper()
+    if method != "GET":
+        return None
+    uri_check = site.get("uri_check") or ""
+    if "{account}" not in uri_check:
+        return None
+
+    url = uri_check.replace("{account}", username)
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    
+    try:
+        resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        if _is_hit(resp, site):
+            return {
+                "site": site.get("name") or "unknown",
+                "url": url,
+                "status": resp.status_code,
+            }
+    except Exception:
+        pass
+    return None
+
+def run_wmn_scan(username: str, max_workers: int = 25, timeout: int = 4) -> list[dict]:
+    data = _load_wmn_data()
+    if not data or not data.get("sites"):
+        return []
+
+    sites = data["sites"]
+    hits = []
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(_probe_site, s, username, timeout): s for s in sites}
+        for fut in as_completed(futures):
+            try:
+                res = fut.result()
+                if res:
+                    hits.append(res)
+            except Exception:
+                pass
+    return hits
+
 
 @bot.event
 async def on_ready():
@@ -115,18 +220,16 @@ async def ip_lookup(ctx, ip_address: str):
     except Exception as e:
         await ctx.respond(f"❌ **Hata:** `{e}`", ephemeral=True)
 
-@bot.slash_command(name="email-sızıntı", description="NULLL- INTELLIGENCE - WhoCord Holehe & Breach İstihbarat Paketi", **USER_INSTALL_CONFIG)
+@bot.slash_command(name="email-sızıntı", description="NULLL- INTELLIGENCE - Ultra Güçlü E-Posta İstihbarat & Sızıntı Analizi", **USER_INSTALL_CONFIG)
 async def email_leak(ctx, email: str):
     await ctx.defer(ephemeral=True)
     email = email.strip().lower()
     hibp_api_key = os.getenv("HIBP_API_KEY", "")
     
-    breaches = []
+    leaks = []
     emailrep_data = {}
     gravatar_url = None
-    holehe_detected = []
 
-    # 1. HIBP & XposedOrNot Veri İhlalleri Taraması
     try:
         if hibp_api_key:
             headers = {"User-Agent": "WhoCord-OSINT/1.1", "hibp-api-key": hibp_api_key, "Accept": "application/json"}
@@ -134,7 +237,7 @@ async def email_leak(ctx, email: str):
             if r.status_code == 200:
                 data = r.json()
                 if isinstance(data, list):
-                    breaches = [b.get("Name", str(b)) for b in data]
+                    leaks = [b.get("Name", str(b)) for b in data]
         
         r2 = requests.get(XPOSED_API_URL.format(email=email), timeout=5)
         if r2.status_code == 200:
@@ -142,12 +245,11 @@ async def email_leak(ctx, email: str):
             if "breaches" in data2 and data2["breaches"]:
                 for b in data2["breaches"]:
                     b_str = str(b)
-                    if b_str not in breaches:
-                        breaches.append(b_str)
+                    if b_str not in leaks:
+                        leaks.append(b_str)
     except Exception:
         pass
 
-    # 2. EmailRep İtibar Taraması
     try:
         r = requests.get(f"https://emailrep.io/{email}", headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
         if r.status_code == 200:
@@ -155,7 +257,6 @@ async def email_leak(ctx, email: str):
     except Exception:
         pass
 
-    # 3. Gravatar Profil ve Görsel Kontrolü
     try:
         email_hash = hashlib.md5(email.encode()).hexdigest()
         g_url = f"https://www.gravatar.com/avatar/{email_hash}?d=404&s=200"
@@ -165,51 +266,26 @@ async def email_leak(ctx, email: str):
     except Exception:
         pass
 
-    # 4. Holehe Tarama Mantığı (Popüler Servislerde E-Posta Varlık Kontrolü)
-    check_platforms = {
-        "Twitter / X": f"https://api.twitter.com/i/users/email_available.json?email={email}",
-        "Spotify": f"https://spclient.wg.spotify.com/signup/public/v1/account?email={email}",
-        "Imgur": f"https://api.imgur.com/3/account/email_available?email={email}",
-        "Adobe": f"https://auth.adobe.io/v2/users/emails?email={email}",
-        "Atlassian": f"https://id.atlassian.com/rest/check-email?email={email}"
-    }
-    
-    headers_h = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    for p_name, p_url in check_platforms.items():
-        try:
-            resp = requests.get(p_url, headers=headers_h, timeout=3)
-            # Holehe mantığına benzer hızlı durum analizi
-            if resp.status_code in [200, 400, 409]: 
-                holehe_detected.append(p_name)
-        except Exception:
-            continue
-
-    # Discord Embed Raporu
     embed = discord.Embed(
-        title="📧 `WhoCord / NULLL` | Kapsamlı E-Posta İstihbaratı",
-        description=f"> **Hedef E-Posta:** `{email}`",
-        color=discord.Color.red() if breaches or emailrep_data.get("reputation") == "low" else discord.Color.green()
+        title="📧 `NULLL- INTELLIGENCE` | Ultra E-Posta Analizi",
+        description=f"> **Sorgulanan E-Posta:** `{email}`",
+        color=discord.Color.red() if leaks or emailrep_data.get("reputation") == "low" else discord.Color.green()
     )
     
-    if breaches:
-        embed.add_field(name="⚠️ Tespit Edilen Veri İhlalleri", value=f"```text\n" + "\n".join([f"• {b}" for b in breaches[:8]]) + "\n```", inline=False)
+    if leaks:
+        embed.add_field(name="⚠️ Tespit Edilen Veri İhlalleri (Sızıntı)", value=f"```text\n" + "\n".join([f"• {l}" for l in leaks[:10]]) + "\n```", inline=False)
     else:
-        embed.add_field(name="✅ Veri İhlali", value="`Kayıtlı veri sızıntısı bulunamadı.`", inline=False)
-
-    if holehe_detected:
-        embed.add_field(name="🔍 Holehe / Servis Tespiti (Kayıtlı Oldu Yerler)", value=f"`" + ", ".join(holehe_detected) + "`", inline=False)
-    else:
-        embed.add_field(name="🔍 Holehe / Servis Tespiti", value="`Test edilen ana servislerde kayıt bulunamadı.`", inline=False)
+        embed.add_field(name="✅ Sızıntı Durumu", value="`Herhangi bir veri ihlali bulunamadı (Temiz).`", inline=False)
         
     rep = emailrep_data.get("reputation", "Bilinmiyor")
     suspicious = emailrep_data.get("suspicious", False)
-    embed.add_field(name="🛡️ EmailRep İtibar", value=f"`{str(rep).upper()}` | Şüpheli: `{'Evet' if suspicious else 'Hayır'}`", inline=False)
+    embed.add_field(name="🛡️ EmailRep İtibar Skoru", value=f"`{str(rep).upper()}` | Şüpheli: `{'Evet' if suspicious else 'Hayır'}`", inline=False)
 
     if gravatar_url:
-        embed.add_field(name="🖼️ Gravatar Profil", value=f"[Görseli Aç ↗]({gravatar_url})", inline=False)
+        embed.add_field(name="🖼️ Gravatar Profil Görseli", value=f"[Görseli Aç ↗]({gravatar_url})", inline=False)
         embed.set_thumbnail(url=gravatar_url)
 
-    embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • WhoCord Email Suite", icon_url=ctx.author.display_avatar.url)
+    embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
     await ctx.respond(embed=embed)
 
 @bot.slash_command(name="phone-sorgu", description="NULLL- INTELLIGENCE - Telefon Numarası İstihbarat Analizi", **USER_INSTALL_CONFIG)
@@ -233,39 +309,36 @@ async def phone_lookup(ctx, phone_number: str):
     embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
     await ctx.respond(embed=embed)
 
-@bot.slash_command(name="username", description="NULLL- INTELLIGENCE - Kullanıcı Adı Sosyal Medya Taraması", **USER_INSTALL_CONFIG)
+@bot.slash_command(name="username", description="NULLL- INTELLIGENCE - WhatsMyName Gelişmiş Sosyal Medya Taraması", **USER_INSTALL_CONFIG)
 async def username_check(ctx, username: str):
     await ctx.defer()
     
-    platforms = {
-        "GitHub": f"https://github.com/{username}",
-        "Instagram": f"https://www.instagram.com/{username}/",
-        "Twitter / X": f"https://x.com/{username}",
-        "Reddit": f"https://www.reddit.com/user/{username}/",
-        "Pinterest": f"https://www.pinterest.com/{username}/",
-        "Telegram": f"https://t.me/{username}",
-        "TikTok": f"https://www.tiktok.com/@{username}",
-        "Steam": f"https://steamcommunity.com/id/{username}",
-        "Twitch": f"https://www.twitch.tv/{username}"
-    }
+    # WhatsMyName veritabanı üzerinden paralel tarama çalıştırılır
+    hits = run_wmn_scan(username, max_workers=20, timeout=4)
+
+    embed = discord.Embed(
+        title="🔍 `NULLL- INTELLIGENCE` | WMN Gelişmiş Kullanıcı Adı Taraması", 
+        description=f"> **Hedef Kullanıcı Adı:** `{username}`",
+        color=DARK_COLOR
+    )
     
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    found = []
-    for name, url in platforms.items():
-        try:
-            r = requests.get(url, headers=headers, timeout=3, allow_redirects=True)
-            if r.status_code == 200:
-                found.append(f"🟢 [{name}]({url})")
-        except:
-            continue
-
-    embed = discord.Embed(title="🔍 `NULLL- INTELLIGENCE` | WhatsMyName OSINT", description=f"> **Hedef Kullanıcı Adı:** `{username}`", color=DARK_COLOR)
-    if found:
-        embed.add_field(name="🔗 Bulunan Aktif Profiller", value="\n".join(found), inline=False)
+    if hits:
+        found_links = []
+        for h in hits[:15]:
+            s_name = h.get("site", "Bilinmiyor")
+            s_url = h.get("url", "#")
+            icon = get_platform_icon(s_name)
+            found_links.append(f"{icon} [{s_name}]({s_url})")
+            
+        embed.add_field(name=f"🔗 Bulunan Aktif Profiller (Toplam: {len(hits)})", value="\n".join(found_links), inline=False)
+        if len(hits) > 15:
+            embed.set_footer(text=f"Ve {len(hits) - 15} tane daha profil bulundu! • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+        else:
+            embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
     else:
-        embed.add_field(name="❌ Sonuç", value="`Belirtilen platformlarda açık profil bulunamadı.`", inline=False)
+        embed.add_field(name="❌ Sonuç", value="`Belirtilen kullanıcı adı için aktif profil bulunamadı.`", inline=False)
+        embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
 
-    embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
     await ctx.respond(embed=embed)
 
 @bot.slash_command(name="domain-sorgu", description="NULLL- INTELLIGENCE - Domain Whois", **USER_INSTALL_CONFIG)
@@ -294,4 +367,21 @@ async def url_analysis(ctx, target_url: str):
     except Exception as e:
         await ctx.respond(f"❌ **Bağlantı Hatası:** `{e}`", ephemeral=True)
 
-@bot.slash_command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres
+@bot.slash_command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres Harita Sorgulama", **USER_INSTALL_CONFIG)
+async def adres_sorgu(ctx, adres: str):
+    await ctx.defer()
+    maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(adres)}"
+    
+    embed = discord.Embed(title="📍 `NULLL- INTELLIGENCE` | Adres & Harita Sorgu", color=DARK_COLOR)
+    embed.add_field(name="🏢 Aranan Adres", value=f"```text\n{adres}\n```", inline=False)
+    embed.add_field(name="🗺️ Harita Bağlantısı", value=f"[Google Maps üzerinde Aç ↗]({maps_url})", inline=False)
+    embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+    
+    await ctx.respond(embed=embed)
+
+if __name__ == "__main__":
+    if not BOT_TOKEN:
+        print("HATA: DISCORD_TOKEN çevre değişkeni bulunamadı!")
+    else:
+        keep_alive()
+        bot.run(BOT_TOKEN)
