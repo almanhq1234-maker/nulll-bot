@@ -152,68 +152,6 @@ def run_wmn_scan(username: str, max_workers: int = 25, timeout: int = 4) -> list
                 pass
     return hits
 
-# ──────────────────────────────────────────────────────────────────────
-# MAIGRET SCANNER MOTORU (data.json entegrasyonu)
-# ──────────────────────────────────────────────────────────────────────
-_MAIGRET_DATA = None
-_maigret_lock = threading.Lock()
-
-def load_maigret_data():
-    global _MAIGRET_DATA
-    with _maigret_lock:
-        if _MAIGRET_DATA is not None:
-            return _MAIGRET_DATA
-        try:
-            if os.path.exists("data.json"):
-                with open("data.json", "r", encoding="utf-8") as f:
-                    _MAIGRET_DATA = json.load(f)
-                    return _MAIGRET_DATA
-        except Exception as e:
-            print(f"Maigret data.json okunamadı: {e}")
-    return None
-
-def _probe_maigret_site(site_name: str, site_info: dict, username: str, timeout: int) -> dict | None:
-    uri_pattern = site_info.get("url") or site_info.get("uri_check") or ""
-    if "{account}" not in uri_pattern and "{username}" not in uri_pattern:
-        return None
-    
-    url = uri_pattern.replace("{account}", username).replace("{username}", username)
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    
-    try:
-        resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-        if resp.status_code == 200:
-            return {
-                "site": site_name,
-                "url": url,
-                "status": resp.status_code
-            }
-    except Exception:
-        pass
-    return None
-
-def run_maigret_scan(username: str, max_workers: int = 25, timeout: int = 4) -> list[dict]:
-    data = load_maigret_data()
-    if not data:
-        return []
-
-    hits = []
-    sites_dict = data if isinstance(data, dict) else {}
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futures = {
-            ex.submit(_probe_maigret_site, s_name, s_info, username, timeout): s_name 
-            for s_name, s_info in sites_dict.items() if isinstance(s_info, dict)
-        }
-        for fut in as_completed(futures):
-            try:
-                res = fut.result()
-                if res:
-                    hits.append(res)
-            except Exception:
-                pass
-    return hits
-
 
 @bot.event
 async def on_ready():
@@ -371,4 +309,78 @@ async def phone_lookup(ctx, phone_number: str):
     embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
     await ctx.respond(embed=embed)
 
-@bot
+@bot.slash_command(name="username", description="NULLL- INTELLIGENCE - WhatsMyName Gelişmiş Sosyal Medya Taraması", **USER_INSTALL_CONFIG)
+async def username_check(ctx, username: str):
+    await ctx.defer()
+    
+    hits = run_wmn_scan(username, max_workers=20, timeout=4)
+
+    embed = discord.Embed(
+        title="🔍 `NULLL- INTELLIGENCE` | WMN Gelişmiş Kullanıcı Adı Taraması", 
+        description=f"> **Hedef Kullanıcı Adı:** `{username}`",
+        color=DARK_COLOR
+    )
+    
+    if hits:
+        found_links = []
+        for h in hits[:15]:
+            s_name = h.get("site", "Bilinmiyor")
+            s_url = h.get("url", "#")
+            icon = get_platform_icon(s_name)
+            found_links.append(f"{icon} [{s_name}]({s_url})")
+            
+        embed.add_field(name=f"🔗 Bulunan Aktif Profiller (Toplam: {len(hits)})", value="\n".join(found_links), inline=False)
+        if len(hits) > 15:
+            embed.set_footer(text=f"Ve {len(hits) - 15} tane daha profil bulundu! • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+        else:
+            embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+    else:
+        embed.add_field(name="❌ Sonuç", value="`Belirtilen kullanıcı adı için aktif profil bulunamadı.`", inline=False)
+        embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+
+    await ctx.respond(embed=embed)
+
+@bot.slash_command(name="domain-sorgu", description="NULLL- INTELLIGENCE - Domain Whois", **USER_INSTALL_CONFIG)
+async def domain_lookup(ctx, domain_name: str):
+    await ctx.defer()
+    try:
+        w = whois.whois(domain_name)
+        embed = discord.Embed(title="🌐 `NULLL- INTELLIGENCE` | Domain WHOIS Bilgisi", description=f"> **Hedef Domain:** `{domain_name}`", color=DARK_COLOR)
+        embed.add_field(name="📝 Kayıt Sağlayıcısı (Registrar)", value=f"```text\n{str(w.registrar or 'Bilinmiyor')}\n```", inline=False)
+        embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+        await ctx.respond(embed=embed)
+    except Exception as e:
+        await ctx.respond(f"❌ **Hata:** `{e}`", ephemeral=True)
+
+@bot.slash_command(name="url-analiz", description="NULLL- INTELLIGENCE - URL Analiz", **USER_INSTALL_CONFIG)
+async def url_analysis(ctx, target_url: str):
+    await ctx.defer()
+    if not target_url.startswith("http"):
+        target_url = "https://" + target_url
+    try:
+        res = requests.get(target_url, timeout=5)
+        embed = discord.Embed(title="🔍 `NULLL- INTELLIGENCE` | Web URL Bağlantı Analizi", description=f"> **Hedef URL:** `{target_url}`", color=DARK_COLOR)
+        embed.add_field(name="📡 HTTP Durum Kodu", value=f"`{res.status_code}`", inline=True)
+        embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+        await ctx.respond(embed=embed)
+    except Exception as e:
+        await ctx.respond(f"❌ **Bağlantı Hatası:** `{e}`", ephemeral=True)
+
+@bot.slash_command(name="adres-sorgu", description="NULLL- INTELLIGENCE - Adres Harita Sorgulama", **USER_INSTALL_CONFIG)
+async def adres_sorgu(ctx, adres: str):
+    await ctx.defer()
+    maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(adres)}"
+    
+    embed = discord.Embed(title="📍 `NULLL- INTELLIGENCE` | Adres & Harita Sorgu", color=DARK_COLOR)
+    embed.add_field(name="🏢 Aranan Adres", value=f"```text\n{adres}\n```", inline=False)
+    embed.add_field(name="🗺️ Harita Bağlantısı", value=f"[Google Maps üzerinde Aç ↗]({maps_url})", inline=False)
+    embed.set_footer(text=f"Sorgulayan: {ctx.author.name} • NULLL- INTELLIGENCE", icon_url=ctx.author.display_avatar.url)
+    
+    await ctx.respond(embed=embed)
+
+if __name__ == "__main__":
+    if not BOT_TOKEN:
+        print("HATA: DISCORD_TOKEN çevre değişkeni bulunamadı!")
+    else:
+        keep_alive()
+        bot.run(BOT_TOKEN)
