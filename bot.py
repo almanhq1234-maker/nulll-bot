@@ -9,6 +9,7 @@ import ipaddress
 import time
 import io
 import subprocess
+import hashlib
 from threading import Thread
 
 import aiohttp
@@ -175,307 +176,167 @@ async def on_ready():
     print(f"NULLL INTELLIGENCE aktif: {bot.user} ({bot.user.id})")
 
 
-# ==================== EMAIL BREACH (Sızıntı Analizi) ====================
-
-def parse_names(data):
-    result = []
-
-    def walk(value):
-        if isinstance(value, str):
-            result.append(value)
-        elif isinstance(value, list):
-            for item in value:
-                walk(item)
-        elif isinstance(value, dict):
-            for key in ("breach", "breachName", "breachID", "name"):
-                if isinstance(value.get(key), str):
-                    result.append(value[key])
-                    return
-            for key in ("breaches", "breaches_details", "exposedBreaches"):
-                if key in value:
-                    walk(value[key])
-
-    walk(data)
-    return list(dict.fromkeys(result))
-
-
-def parse_records(data):
-    records = []
-
-    def walk(value):
-        if isinstance(value, list):
-            for item in value:
-                walk(item)
-        elif isinstance(value, dict):
-            if any(
-                key in value for key in (
-                    "exposedData", "exposed_data", "xposed_data",
-                    "breachedDate", "breached_date", "dataClasses"
-                )
-            ):
-                records.append(value)
-
-            for key in (
-                "ExposedBreaches", "exposedBreaches",
-                "breaches_details", "breaches"
-            ):
-                if key in value:
-                    walk(value[key])
-
-    walk(data)
-    return records
-
+# ==================== EMAIL OSINT & BREACH (Kapsamlı İstihbarat) ====================
 
 @bot.tree.command(
-    name="email-sızıntı",
-    description="E-posta veri ihlali ve sızıntı kaynağı kontrolü"
+    name="email-osint",
+    description="E-posta için platform eşleşmeleri, sızıntılar ve stealer log taraması"
 )
 @app_commands.checks.cooldown(1, 10.0)
-async def email_leak(interaction: discord.Interaction, email: str):
+async def email_osint(interaction: discord.Interaction, email: str):
     await interaction.response.defer(ephemeral=True)
-
     email = email.strip().lower()
 
-    if len(email) > 254 or not re.fullmatch(
-        r"[^@\s]+@[^@\s]+\.[^@\s]+", email
-    ):
-        await interaction.followup.send(
-            "Geçerli bir e-posta adresi gir.",
-            ephemeral=True
-        )
+    if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        await interaction.followup.send("Geçerli bir e-posta adresi gir.", ephemeral=True)
         return
 
+    email_hash = hashlib.md5(email.encode()).hexdigest()
+    output_file = f"result_{interaction.user.id}.json"
+
     try:
-        analytics = {}
-        analytics_error = None
+        tasks = [
+            bot.http_session.get(f"https://api.github.com/search/users?q={email}+in:email"),
+            bot.http_session.post("https://www.chess.com/callback/email/available", data={'email': email}),
+            bot.http_session.get(f"https://www.gravatar.com/{email_hash}.json"),
+            bot.http_session.post('https://api.accounts.firefox.com/v1/account/status', json={"email": email}),
+            bot.http_session.get(f"https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-email?email={email}"),
+            bot.http_session.get(f"https://leakcheck.net/api/public?key=49535f49545f5245414c4c595f4150495f4b4559&check={email}")
+        ]
 
-        try:
-            analytics = await get_json(
-                "https://api.xposedornot.com/v1/breach-analytics",
-                params={"email": email}
-            )
-        except requests.HTTPError as exc:
-            analytics_error = (
-                exc.response.status_code if exc.response else 0
-            )
-        except Exception as exc:
-            print("XON analytics:", type(exc).__name__, str(exc)[:300])
-            analytics_error = 0
+        responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-        records = parse_records(analytics) if analytics else []
-        names = parse_names(analytics) if analytics else []
+        data = {
+            "target": email,
+            "social_media": {},
+            "breaches": [],
+            "stealer_logs": {}
+        }
 
-        basic_error = None
-        if not names and not records:
+        for i, res in enumerate(responses):
+            if isinstance(res, Exception) or res is None:
+                continue
             try:
-                basic = await get_json(
-                    "https://api.xposedornot.com/v1/check-email/"
-                    + urllib.parse.quote(email, safe="")
-                )
-                names = parse_names(basic)
-            except requests.HTTPError as exc:
-                basic_error = (
-                    exc.response.status_code if exc.response else 0
-                )
-            except Exception as exc:
-                print("XON basic:", type(exc).__name__, str(exc)[:300])
-                basic_error = 0
-
-        hibp_error = None
-        hibp_records = []
-
-        if HIBP_API_KEY:
-            try:
-                hibp_records = await get_json(
-                    "https://haveibeenpwned.com/api/v3/breachedaccount/"
-                    + urllib.parse.quote(email, safe=""),
-                    params={"truncateResponse": "false"},
-                    headers={
-                        "hibp-api-key": HIBP_API_KEY,
-                        "Accept": "application/json",
-                        "User-Agent": "NULLL-INTELLIGENCE"
-                    }
-                )
-
-                if not isinstance(hibp_records, list):
-                    hibp_records = []
-
-            except requests.HTTPError as exc:
-                hibp_error = (
-                    exc.response.status_code if exc.response else 0
-                )
-            except Exception as exc:
-                print("HIBP:", type(exc).__name__, str(exc)[:300])
-                hibp_error = 0
+                if res.status != 200:
+                    continue
+                js = await res.json(content_type=None)
+                if i == 0:
+                    data["social_media"]["GitHub"] = js.get("items", [{}])[0].get("login") if js.get("total_count") else "Yok"
+                elif i == 1:
+                    data["social_media"]["Chess"] = "Bulundu" if not js.get("isEmailAvailable") else "Yok"
+                elif i == 2:
+                    data["social_media"]["Gravatar"] = js.get("entry", [{}])[0].get("preferredUsername") if "entry" in js else "Yok"
+                elif i == 3:
+                    text_resp = await res.text()
+                    data["social_media"]["Firefox"] = "Bulundu" if "true" in text_resp else "Yok"
+                elif i == 4:
+                    if isinstance(js, dict) and js.get("stealers"):
+                        data["stealer_logs"] = js["stealers"][0]
+                elif i == 5:
+                    if isinstance(js, dict) and "sources" in js:
+                        data["breaches"] = [f"{s.get('name')} ({s.get('date')})" for s in js["sources"]]
+            except Exception:
+                continue
 
         embed = embed_base(
-            "📧 NULLL INTELLIGENCE | Email Breach Analysis",
-            f"**Sorgulanan e-posta:** `{email}`"
+            "📧 NULLL INTELLIGENCE | Email OSINT Report",
+            f"**Hedef e-posta:** `{email}`"
         )
 
-        for record in hibp_records:
-            if isinstance(record, dict):
-                hibp_name = record.get("Name", "Bilinmeyen ihlal")
-                names.append(str(hibp_name))
+        socials = data.get("social_media", {})
+        social_str = "\n".join([f"• **{k}:** `{v}`" for k, v in socials.items() if v != "Yok"]) or "Eşleşme bulunamadı."
+        embed.add_field(name="🌐 Sosyal Medya / Servisler", value=social_str, inline=False)
 
-                data_classes = record.get("DataClasses", [])
-                records.append({
-                    "breach": hibp_name,
-                    "breachedDate": record.get("BreachDate"),
-                    "exposedData": data_classes,
-                    "domain": record.get("Domain"),
-                    "description": record.get("Description"),
-                    "isVerified": record.get("IsVerified")
-                })
+        breaches = data.get("breaches", [])
+        breach_str = "\n".join([f"• {b}" for b in breaches[:10]]) or "Kayıt bulunamadı."
+        embed.add_field(name=f"⚠️ Veri İhlalleri ({len(breaches)})", value=breach_str, inline=False)
 
-        names = list(dict.fromkeys(names))
-
-        if not names and not records:
-            if (
-                analytics_error == 429
-                or basic_error == 429
-                or hibp_error == 429
-            ):
-                embed.color = discord.Color.orange()
-                embed.add_field(
-                    name="API sınırı",
-                    value="İstek sınırına ulaşıldı. Bir süre sonra tekrar dene.",
-                    inline=False
-                )
-            elif (
-                analytics_error is not None
-                or basic_error is not None
-                or hibp_error is not None
-            ):
-                embed.color = discord.Color.orange()
-                embed.add_field(
-                    name="API yanıtı",
-                    value=(
-                        "Servislerden biri sonuç veremedi. Bu durum "
-                        "e-postanın temiz olduğu anlamına gelmez."
-                    ),
-                    inline=False
-                )
-            else:
-                embed.color = discord.Color.green()
-                embed.add_field(
-                    name="Sonuç",
-                    value=(
-                        "Kontrol edilen kaynaklarda bilinen ihlal "
-                        "bulunamadı. Bu, kesin olarak sızıntı yok "
-                        "demek değildir."
-                    ),
-                    inline=False
-                )
-        else:
-            embed.color = discord.Color.red()
+        stealer = data.get("stealer_logs", {})
+        if stealer:
             embed.add_field(
-                name="Bulunan ihlal sayısı",
-                value=f"`{len(names) if names else len(records)}`",
+                name="💻 Stealer Log Bilgisi",
+                value=f"• **Bilgisayar:** `{stealer.get('computer_name', 'Bilinmiyor')}`\n• **IP:** `{stealer.get('ip', 'Bilinmiyor')}`\n• **Kayıt Tarihi:** `{stealer.get('date', 'Bilinmiyor')}`",
                 inline=False
             )
 
-            by_name = {}
-
-            for record in records:
-                name = str(
-                    record.get("breach")
-                    or record.get("breachName")
-                    or record.get("breachID")
-                    or record.get("name")
-                    or "Bilinmeyen ihlal"
-                )
-                by_name[name] = record
-
-            for name in names:
-                by_name.setdefault(name, {})
-
-            if not by_name:
-                by_name["Bilinmeyen ihlal"] = {}
-
-            for name, record in list(by_name.items())[:10]:
-                date = (
-                    record.get("breachedDate")
-                    or record.get("breached_date")
-                    or record.get("BreachDate")
-                    or record.get("date")
-                    or "API yanıtında yok"
-                )
-
-                exposed = (
-                    record.get("exposedData")
-                    or record.get("exposed_data")
-                    or record.get("xposed_data")
-                    or record.get("dataClasses")
-                    or record.get("DataClasses")
-                    or []
-                )
-
-                if isinstance(exposed, str):
-                    exposed = [x.strip() for x in re.split(r"[,;|]", exposed)]
-
-                if not isinstance(exposed, list):
-                    exposed = []
-
-                details = [
-                    f"**Tarih:** {str(date)[:100]}",
-                    "**Veri türleri:** " + (
-                        ", ".join(str(x) for x in exposed[:15])
-                        if exposed else "API yanıtında bulunmuyor"
-                    )
-                ]
-
-                domain = record.get("domain") or record.get("Domain")
-                if domain:
-                    details.append(f"**Domain:** {str(domain)[:150]}")
-
-                description = (
-                    record.get("description")
-                    or record.get("Description")
-                )
-                if description:
-                    description = re.sub(
-                        r"<[^>]*>", " ", str(description)
-                    )
-                    details.append(
-                        f"**Açıklama:** {description[:250]}"
-                    )
-
-                verified = record.get("isVerified")
-                if verified is not None:
-                    details.append(
-                        "**Doğrulanmış ihlal:** "
-                        + ("Evet" if verified else "Hayır")
-                    )
-
-                embed.add_field(
-                    name=name[:250],
-                    value="\n".join(details)[:1024],
-                    inline=False
-                )
-
-        embed.add_field(
-            name="Gizlilik notu",
-            value=(
-                "Bu rapor ihlal kaynaklarını ve servislerin sağladığı "
-                "metadata bilgilerini gösterir; sızdırılmış parolaları "
-                "ve özel kayıtların içeriklerini göstermez."
-            ),
-            inline=False
-        )
-
         footer(embed, interaction)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        import json
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+
+        file_obj = discord.File(output_file, filename=f"{email.split('@')[0]}_osint.json")
+        await interaction.followup.send(embed=embed, file=file_obj, ephemeral=True)
 
     except Exception as exc:
-        print("EMAIL ERROR:", type(exc).__name__, str(exc)[:500])
-        await interaction.followup.send(
-            "E-posta analizi başarısız oldu. Render loglarını kontrol et.",
-            ephemeral=True
-        )
+        print("EMAIL OSINT ERROR:", repr(exc))
+        await interaction.followup.send("E-posta OSINT analizi sırasında bir hata oluştu.", ephemeral=True)
+    finally:
+        if os.path.exists(output_file):
+            os.remove(output_file)
 
 
-# ==================== EMAILFINDER (Domain Bazlı E-Posta Arama) ====================
+# ==================== EMAIL SEARCH & DORKING ====================
+
+@bot.tree.command(
+    name="email-search",
+    description="E-posta için açık kaynak arama bağlantıları ve domain MX doğrulaması"
+)
+@app_commands.checks.cooldown(1, 5.0)
+async def email_search(interaction: discord.Interaction, email: str):
+    await interaction.response.defer(ephemeral=True)
+    email = email.strip().lower()
+
+    if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        await interaction.followup.send("Geçerli bir e-posta adresi gir.", ephemeral=True)
+        return
+
+    domain = email.split("@")[1]
+
+    mx_records = []
+    try:
+        resolver = dns.asyncresolver.Resolver()
+        answers = await resolver.resolve(domain, 'MX')
+        mx_records = [str(r.exchange).rstrip('.') for r in answers]
+    except Exception:
+        mx_records = []
+
+    encoded_email = urllib.parse.quote(f'"{email}"')
+    google_search = f"https://www.google.com/search?q={encoded_email}"
+    paste_search = f"https://www.google.com/search?q={encoded_email}+site:pastebin.com+OR+site:ghostbin.com+OR+site:justpaste.it"
+    file_search = f"https://www.google.com/search?q={encoded_email}+filetype:txt+OR+filetype:pdf+OR+filetype:csv"
+    duckduckgo_search = f"https://duckduckgo.com/?q={encoded_email}"
+
+    embed = embed_base(
+        "🔎 NULLL INTELLIGENCE | Email Search & Recon",
+        f"**Sorgulanan e-posta:** `{email}`"
+    )
+
+    embed.add_field(
+        name="🌐 Açık Kaynak Arama Bağlantıları (Dorking)",
+        value=(
+            f"• [Google Genel Arama]({google_search})\n"
+            f"• [Paste Sitelerinde Ara]({paste_search})\n"
+            f"• [Sızdırılmış Belge / Dosya Araması]({file_search})\n"
+            f"• [DuckDuckGo Araması]({duckduckgo_search})"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="✉️ Domain MX (E-posta Sunucu) Durumu",
+        value=(
+            f"**Domain:** `{domain}`\n"
+            f"**Aktif MX Kayıtları:** " + (", ".join(f"`{mx}`" for mx in mx_records[:3]) if mx_records else "MX Kaydı Bulunamadı")
+        ),
+        inline=False
+    )
+
+    footer(embed, interaction)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ==================== EMAILFINDER (Domain Bazlı Taraması) ====================
 
 def filter_emails(email_list):
     return [email for email in email_list if not (email.startswith('u0027@') or email.startswith('22@'))]
@@ -499,7 +360,7 @@ async def loading_bar(interaction):
             await interaction.edit_original_response(content=stage)
         except Exception:
             pass
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(0.3)
 
 @bot.tree.command(name="emailfinder", description="Belirtilen domain ile ilişkili açık e-postaları ara")
 @app_commands.checks.cooldown(1, 15.0)
@@ -554,7 +415,7 @@ async def emailfinder(interaction: discord.Interaction, domain: str):
         bot.is_processing = False
 
 
-# ==================== DISCORD USER ====================
+# ==================== DISCORD USER LOOKUP ====================
 
 @bot.tree.command(name="ara", description="Discord hesap bilgileri")
 @app_commands.checks.cooldown(1, 5.0)
