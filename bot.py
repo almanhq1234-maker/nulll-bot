@@ -10,6 +10,7 @@ import time
 import io
 import subprocess
 import hashlib
+import json
 from threading import Thread
 
 import aiohttp
@@ -70,7 +71,10 @@ class NullBot(commands.Bot):
 bot = NullBot(command_prefix="!", intents=intents)
 TOKEN = os.getenv("DISCORD_TOKEN")
 HIBP_API_KEY = os.getenv("HIBP_API_KEY", "")
-ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY", "")
+ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY", "")  # opsiyonel
+
+# Bot sahibinin Discord ID'si (Referans kodu üretebilmesi için buraya kendi ID'ni yazabilirsin)
+OWNER_ID = 0  # Kendi Discord ID'ni buraya yaz (Örn: 123456789012345678)
 
 COLOR = discord.Color.from_rgb(47, 49, 54)
 
@@ -110,6 +114,7 @@ async def get_json(url, params=None, headers=None, timeout=12):
 
 
 async def aget_json(url, params=None, headers=None, timeout=12):
+    """aiohttp ile JSON al. 404 durumunda None döner."""
     async with bot.http_session.get(
         url,
         params=params,
@@ -121,6 +126,36 @@ async def aget_json(url, params=None, headers=None, timeout=12):
         resp.raise_for_status()
         return await resp.json(content_type=None)
 
+
+# ---------- Güvenlik yardımcıları (SSRF koruması) ----------
+
+async def resolve_public(host: str):
+    try:
+        ip = ipaddress.ip_address(host)
+        if not ip.is_global:
+            raise ValueError("Özel/yerel IP adreslerine istek gönderilemez.")
+        return [str(ip)]
+    except ValueError as exc:
+        if "istek gönderilemez" in str(exc):
+            raise
+
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise ValueError("Domain çözümlenemedi.")
+
+    ips = list({i[4][0] for i in infos})
+    if not ips:
+        raise ValueError("Domain çözümlenemedi.")
+
+    for item in ips:
+        if not ipaddress.ip_address(item.split("%")[0]).is_global:
+            raise ValueError("Hedef özel/yerel bir adrese çözülüyor.")
+    return ips
+
+
+# ---------- Cooldown / hata yönetimi ----------
 
 @bot.tree.error
 async def on_tree_error(interaction: discord.Interaction, error):
@@ -144,25 +179,111 @@ async def on_ready():
     print(f"NULLL INTELLIGENCE aktif: {bot.user} ({bot.user.id})")
 
 
-# ==================== 1. DLOOKUP (Discord ID & Leak Veritabanı Sorgu) ====================
+# ==================== REFERANS KODU SİSTEMİ ====================
+
+REF_FILE = "referrals.json"
+
+
+def load_refs():
+    if not os.path.exists(REF_FILE):
+        return {}
+    try:
+        with open(REF_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+
+def save_refs(data):
+    with open(REF_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+
+@bot.tree.command(name="ref-uret", description="[Yalnızca Bot Sahibi] Arkadaşlara özel referans kodu oluşturur")
+@app_commands.describe(code="Oluşturulacak kod", uses="Kullanım hakkı sayısı")
+async def ref_uret(interaction: discord.Interaction, code: str, uses: int):
+    if OWNER_ID and interaction.user.id != OWNER_ID:
+        await interaction.response.send_message("Bu komutu sadece bot sahibi kullanabilir.", ephemeral=True)
+        return
+
+    refs = load_refs()
+    code = code.strip()
+
+    if code in refs:
+        await interaction.response.send_message(f"`{code}` adında bir referans kodu zaten mevcut!", ephemeral=True)
+        return
+
+    refs[code] = {
+        "max_uses": uses,
+        "used_count": 0,
+        "users": []
+    }
+    save_refs(refs)
+
+    embed = embed_base("🎫 Referans Kodu Oluşturuldu", f"**Kod:** `{code}`\n**Kullanım Hakkı:** `{uses}`")
+    footer(embed, interaction)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="ref-kullan", description="Sana verilen referans kodunu aktif eder")
+@app_commands.describe(code="Aktif edilecek referans kodu")
+async def ref_kullan(interaction: discord.Interaction, code: str):
+    await interaction.response.defer(ephemeral=True)
+    refs = load_refs()
+    code = code.strip()
+
+    if code not in refs:
+        await interaction.followup.send("Geçersiz referans kodu!", ephemeral=True)
+        return
+
+    ref_data = refs[code]
+    user_id_str = str(interaction.user.id)
+
+    if user_id_str in ref_data["users"]:
+        await interaction.followup.send("Bu referans kodunu zaten daha önce kullanmışsın!", ephemeral=True)
+        return
+
+    if ref_data["used_count"] >= ref_data["max_uses"]:
+        await interaction.followup.send("Bu referans kodunun kullanım hakkı tükenmiş!", ephemeral=True)
+        return
+
+    ref_data["used_count"] += 1
+    ref_data["users"].append(user_id_str)
+    save_refs(refs)
+
+    embed = embed_base("✅ Referans Kodu Başarıyla Aktifleştirildi", f"**Kod:** `{code}`\nKalan Hakkın: `{ref_data['max_uses'] - ref_data['used_count']}`")
+    footer(embed, interaction)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ==================== 1. DLOOKUP (Hızlı Önbellekli Veritabanı Tarama) ====================
 
 SCAMMER_URL = "https://raw.githubusercontent.com/im-silent/newdbs/refs/heads/main/dbs/ScammerAlert!%20-%20ALERTS%20-%20%E2%9B%94%E2%94%83known-scammers%20%5B888763420055318559%5D.csv"
 RESTORECORD_URL = "https://raw.githubusercontent.com/im-silent/newdbs/refs/heads/main/dbs/RestoreCord.sql"
 
-def find_line_in_db(url, uid):
-    try:
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            lines = r.text.splitlines()
-            for line in lines:
-                if uid in line:
-                    return line
-        return None
-    except:
-        return None
+DB_CACHE = {}
+CACHE_TIME = 0
+CACHE_TTL = 3600  # 1 saat boyunca bellekte tutarak sorguları hızlandırır
 
-@bot.tree.command(name="dlookup", description="Discord ID ile scammer ve sızıntı (RestoreCord) veritabanı taraması")
-@app_commands.checks.cooldown(1, 10.0)
+
+async def get_db_lines(url):
+    global CACHE_TIME, DB_CACHE
+    now = time.time()
+    if url in DB_CACHE and (now - CACHE_TIME) < CACHE_TTL:
+        return DB_CACHE[url]
+    
+    async with bot.http_session.get(url) as resp:
+        if resp.status == 200:
+            text = await resp.text()
+            lines = text.splitlines()
+            DB_CACHE[url] = lines
+            CACHE_TIME = now
+            return lines
+    return []
+
+
+@bot.tree.command(name="dlookup", description="Discord ID ile scammer ve sızıntı veritabanı taraması")
+@app_commands.checks.cooldown(1, 3.0)
 async def dlookup(interaction: discord.Interaction, uid: str):
     await interaction.response.defer(ephemeral=True)
 
@@ -176,11 +297,12 @@ async def dlookup(interaction: discord.Interaction, uid: str):
     except:
         username = "Bulunamadı"
 
-    # Ağ aramalarını asenkron yürütmek için thread havuzuna atıyoruz
-    scammer_line = await asyncio.to_thread(find_line_in_db, SCAMMER_URL, uid)
+    scammer_lines = await get_db_lines(SCAMMER_URL)
+    scammer_line = next((line for line in scammer_lines if uid in line), None)
     is_scammer = "True" if scammer_line else "False"
     
-    restorecord_line = await asyncio.to_thread(find_line_in_db, RESTORECORD_URL, uid)
+    restorecord_lines = await get_db_lines(RESTORECORD_URL)
+    restorecord_line = next((line for line in restorecord_lines if uid in line), None)
     leak_display = restorecord_line if restorecord_line else "None Found"
 
     embed = embed_base(
@@ -281,7 +403,6 @@ async def email_osint(interaction: discord.Interaction, email: str):
 
         footer(embed, interaction)
 
-        import json
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
 
@@ -300,7 +421,7 @@ async def email_osint(interaction: discord.Interaction, email: str):
 
 @bot.tree.command(
     name="email-search",
-    description="E-posta adresi için açık kaynak arama bağlantıları ve domain MX doğrulaması"
+    description="E-posta için açık kaynak arama bağlantıları ve domain MX doğrulaması"
 )
 @app_commands.checks.cooldown(1, 5.0)
 async def email_search(interaction: discord.Interaction, email: str):
@@ -361,6 +482,7 @@ async def email_search(interaction: discord.Interaction, email: str):
 def filter_emails(email_list):
     return [email for email in email_list if not (email.startswith('u0027@') or email.startswith('22@'))]
 
+
 async def loading_bar(interaction):
     stages = [
         "🔄 E-postalar taranıyor [▒▒▒▒▒▒▒▒▒▒] 0%",
@@ -381,6 +503,7 @@ async def loading_bar(interaction):
         except Exception:
             pass
         await asyncio.sleep(0.3)
+
 
 @bot.tree.command(name="emailfinder", description="Belirtilen domain ile ilişkili açık e-postaları ara")
 @app_commands.checks.cooldown(1, 15.0)
@@ -926,14 +1049,4 @@ async def domain_lookup(interaction: discord.Interaction, domain_name: str):
 
     except Exception as exc:
         print("RDAP ERROR:", repr(exc))
-        await interaction.followup.send("Domain sorgusu başarısız oldu.", ephemeral=True)
-
-
-# ==================== STARTUP ====================
-
-if __name__ == "__main__":
-    if not TOKEN:
-        raise RuntimeError("DISCORD_TOKEN ortam değişkeni bulunamadı!")
-
-    keep_alive()
-    bot.run(TOKEN)
+        await interaction.followup.send("Domain sorgusu başarısız
