@@ -1,4 +1,8 @@
 discord.py
+flask
 requests
-Flask
+aiohttp
+phonenumbers
+dnspython
 python-whois
+emailfinder
