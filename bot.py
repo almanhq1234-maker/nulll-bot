@@ -71,7 +71,7 @@ class NullBot(commands.Bot):
 bot = NullBot(command_prefix="!", intents=intents)
 TOKEN = os.getenv("DISCORD_TOKEN")
 HIBP_API_KEY = os.getenv("HIBP_API_KEY", "")
-ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY", "")  # opsiyonel
+ABUSEIPDB_KEY = os.getenv("ABuseIPDB_KEY", "")
 
 # Bot sahibinin Discord ID'si (Referans kodu üretebilmesi için buraya kendi ID'ni yazabilirsin)
 OWNER_ID = 0  # Kendi Discord ID'ni buraya yaz (Örn: 123456789012345678)
@@ -114,7 +114,6 @@ async def get_json(url, params=None, headers=None, timeout=12):
 
 
 async def aget_json(url, params=None, headers=None, timeout=12):
-    """aiohttp ile JSON al. 404 durumunda None döner."""
     async with bot.http_session.get(
         url,
         params=params,
@@ -126,36 +125,6 @@ async def aget_json(url, params=None, headers=None, timeout=12):
         resp.raise_for_status()
         return await resp.json(content_type=None)
 
-
-# ---------- Güvenlik yardımcıları (SSRF koruması) ----------
-
-async def resolve_public(host: str):
-    try:
-        ip = ipaddress.ip_address(host)
-        if not ip.is_global:
-            raise ValueError("Özel/yerel IP adreslerine istek gönderilemez.")
-        return [str(ip)]
-    except ValueError as exc:
-        if "istek gönderilemez" in str(exc):
-            raise
-
-    loop = asyncio.get_running_loop()
-    try:
-        infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    except socket.gaierror:
-        raise ValueError("Domain çözümlenemedi.")
-
-    ips = list({i[4][0] for i in infos})
-    if not ips:
-        raise ValueError("Domain çözümlenemedi.")
-
-    for item in ips:
-        if not ipaddress.ip_address(item.split("%")[0]).is_global:
-            raise ValueError("Hedef özel/yerel bir adrese çözülüyor.")
-    return ips
-
-
-# ---------- Cooldown / hata yönetimi ----------
 
 @bot.tree.error
 async def on_tree_error(interaction: discord.Interaction, error):
@@ -263,7 +232,7 @@ RESTORECORD_URL = "https://raw.githubusercontent.com/im-silent/newdbs/refs/heads
 
 DB_CACHE = {}
 CACHE_TIME = 0
-CACHE_TTL = 3600  # 1 saat boyunca bellekte tutarak sorguları hızlandırır
+CACHE_TTL = 3600
 
 
 async def get_db_lines(url):
@@ -1049,4 +1018,14 @@ async def domain_lookup(interaction: discord.Interaction, domain_name: str):
 
     except Exception as exc:
         print("RDAP ERROR:", repr(exc))
-        await interaction.followup.send("Domain sorgusu başarısız
+        await interaction.followup.send("Domain sorgusu başarısız oldu.", ephemeral=True)
+
+
+# ==================== STARTUP ====================
+
+if __name__ == "__main__":
+    if not TOKEN:
+        raise RuntimeError("DISCORD_TOKEN ortam değişkeni bulunamadı!")
+
+    keep_alive()
+    bot.run(TOKEN)
