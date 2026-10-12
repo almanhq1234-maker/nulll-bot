@@ -74,11 +74,11 @@ HIBP_API_KEY = os.getenv("HIBP_API_KEY", "")
 ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY", "")
 
 # --- YETKİLENDİRME VE AYARLAR ---
-OWNER_ID = 0          # Kendi Discord ID'ni buraya yaz (Bot sahibi)
-ADMIN_ROLE_ID = 0     # Admin rol ID'si
-VIP_ROLE_ID = 0       # VIP rol ID'si
+OWNER_ID = 1484592449153142789  # Sadece senin ID'n referans üretebilir
+ADMIN_ROLE_ID = 0               # Admin rol ID'si (İsteğe bağlı)
+VIP_ROLE_ID = 0                 # VIP rol ID'si (İsteğe bağlı)
 
-# Belirttiğin Kanal ID ve Webhook URL'si
+# Log Kanalı ve Webhook Bilgileri
 LOG_CHANNEL_ID = 1559255221039927487
 LOG_WEBHOOK_URL = "https://discord.com/api/webhooks/1559255273586040832/8Kx3KlomyNdJclumYc2Igpw3BFMOPbHe_5J83qPuVrbrIdfDlA2KRNLB3QVxqk8JeZV4"
 
@@ -267,8 +267,8 @@ def save_refs(data):
 @bot.tree.command(name="ref-uret", description="[Yalnızca Bot Sahibi] Arkadaşlara özel referans kodu oluşturur")
 @app_commands.describe(code="Oluşturulacak kod", uses="Kullanım hakkı sayısı")
 async def ref_uret(interaction: discord.Interaction, code: str, uses: int):
-    if OWNER_ID and interaction.user.id != OWNER_ID:
-        await interaction.response.send_message("Bu komutu sadece bot sahibi kullanabilir.", ephemeral=True)
+    if interaction.user.id != OWNER_ID:
+        await interaction.response.send_message("Bu komutu sadece bot sahibi kullanabilir!", ephemeral=True)
         return
 
     refs = load_refs()
