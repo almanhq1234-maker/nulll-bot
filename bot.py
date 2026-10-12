@@ -71,10 +71,16 @@ class NullBot(commands.Bot):
 bot = NullBot(command_prefix="!", intents=intents)
 TOKEN = os.getenv("DISCORD_TOKEN")
 HIBP_API_KEY = os.getenv("HIBP_API_KEY", "")
-ABUSEIPDB_KEY = os.getenv("ABuseIPDB_KEY", "")
+ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY", "")
 
-# Bot sahibinin Discord ID'si (Referans kodu üretebilmesi için buraya kendi ID'ni yazabilirsin)
-OWNER_ID = 0  # Kendi Discord ID'ni buraya yaz (Örn: 123456789012345678)
+# --- YETKİLENDİRME VE AYARLAR ---
+OWNER_ID = 0          # Kendi Discord ID'ni buraya yaz (Bot sahibi)
+ADMIN_ROLE_ID = 0     # Admin rol ID'si
+VIP_ROLE_ID = 0       # VIP rol ID'si
+
+# Belirttiğin Kanal ID ve Webhook URL'si
+LOG_CHANNEL_ID = 1559255221039927487
+LOG_WEBHOOK_URL = "https://discord.com/api/webhooks/1559255273586040832/8Kx3KlomyNdJclumYc2Igpw3BFMOPbHe_5J83qPuVrbrIdfDlA2KRNLB3QVxqk8JeZV4"
 
 COLOR = discord.Color.from_rgb(47, 49, 54)
 
@@ -102,6 +108,66 @@ def footer(embed, interaction):
     )
 
 
+async def send_log(interaction: discord.Interaction, command_name: str, target_info: str):
+    """Yapılan her sorguyu webhook veya doğrudan kanal üzerinden loglar."""
+    if LOG_WEBHOOK_URL:
+        try:
+            payload = {
+                "embeds": [{
+                    "title": "📜 Sorgu Logu",
+                    "description": f"**Komut:** `/{command_name}`\n**Hedef/Parametre:** `{target_info}`",
+                    "color": 3092790,
+                    "fields": [
+                        {"name": "Kullanıcı", "value": f"{interaction.user} (`{interaction.user.id}`)", "inline": True},
+                        {"name": "Konum/Sunucu", "value": interaction.guild.name if interaction.guild else "Özel Mesaj / Grup", "inline": True}
+                    ],
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+                }]
+            }
+            async with bot.http_session.post(LOG_WEBHOOK_URL, json=payload) as resp:
+                if resp.status in (200, 204):
+                    return
+        except Exception as e:
+            print("Webhook log hatası:", repr(e))
+
+    if LOG_CHANNEL_ID:
+        try:
+            channel = bot.get_channel(LOG_CHANNEL_ID)
+            if not channel:
+                channel = await bot.fetch_channel(LOG_CHANNEL_ID)
+            if channel:
+                embed = embed_base("📜 Sorgu Logu", f"**Komut:** `/{command_name}`\n**Hedef/Parametre:** `{target_info}`")
+                embed.add_field(name="Kullanıcı", value=f"{interaction.user} (`{interaction.user.id}`)", inline=True)
+                embed.add_field(name="Konum/Sunucu", value=interaction.guild.name if interaction.guild else "Özel Mesaj / Grup", inline=True)
+                await channel.send(embed=embed)
+        except Exception as e:
+            print("Kanal log gönderme hatası:", repr(e))
+
+
+async def check_access(interaction: discord.Interaction) -> bool:
+    """Kullanıcının VIP, Admin, Bot Sahibi olup olmadığını veya geçerli referansı bulunduğunu kontrol eder."""
+    user = interaction.user
+    
+    if not interaction.guild:
+        return True
+    
+    if user.id == OWNER_ID:
+        return True
+        
+    if isinstance(user, discord.Member):
+        role_ids = [role.id for role in user.roles]
+        if (ADMIN_ROLE_ID and ADMIN_ROLE_ID in role_ids) or (VIP_ROLE_ID and VIP_ROLE_ID in role_ids):
+            return True
+
+    refs = load_refs()
+    user_id_str = str(user.id)
+    for code, data in refs.items():
+        if user_id_str in data.get("users", []):
+            return True
+            
+    return False
+
+
 async def get_json(url, params=None, headers=None, timeout=12):
     def request():
         response = SESSION.get(
@@ -125,6 +191,36 @@ async def aget_json(url, params=None, headers=None, timeout=12):
         resp.raise_for_status()
         return await resp.json(content_type=None)
 
+
+# ---------- Güvenlik yardımcıları (SSRF koruması) ----------
+
+async def resolve_public(host: str):
+    try:
+        ip = ipaddress.ip_address(host)
+        if not ip.is_global:
+            raise ValueError("Özel/yerel IP adreslerine istek gönderilemez.")
+        return [str(ip)]
+    except ValueError as exc:
+        if "istek gönderilemez" in str(exc):
+            raise
+
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise ValueError("Domain çözümlenemedi.")
+
+    ips = list({i[4][0] for i in infos})
+    if not ips:
+        raise ValueError("Domain çözümlenemedi.")
+
+    for item in ips:
+        if not ipaddress.ip_address(item.split("%")[0]).is_global:
+            raise ValueError("Hedef özel/yerel bir adrese çözülüyor.")
+    return ips
+
+
+# ---------- Cooldown / hata yönetimi ----------
 
 @bot.tree.error
 async def on_tree_error(interaction: discord.Interaction, error):
@@ -220,7 +316,30 @@ async def ref_kullan(interaction: discord.Interaction, code: str):
     ref_data["users"].append(user_id_str)
     save_refs(refs)
 
-    embed = embed_base("✅ Referans Kodu Başarıyla Aktifleştirildi", f"**Kod:** `{code}`\nKalan Hakkın: `{ref_data['max_uses'] - ref_data['used_count']}`")
+    embed = embed_base("✅ Referans Kodu Aktifleştirildi", f"**Kod:** `{code}`\nKalan Hakkın: `{ref_data['max_uses'] - ref_data['used_count']}`")
+    footer(embed, interaction)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="ref-durum", description="Aktif ettiğin referans kodunu ve durumunu gösterir")
+async def ref_durum(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    refs = load_refs()
+    user_id_str = str(interaction.user.id)
+
+    user_code, user_ref_data = None, None
+    for code, data in refs.items():
+        if user_id_str in data.get("users", []):
+            user_code = code
+            user_ref_data = data
+            break
+
+    if not user_code:
+        await interaction.followup.send("Aktif edilmiş bir referans kodun yok! `/ref-kullan` komutunu kullanabilirsin.", ephemeral=True)
+        return
+
+    remaining = user_ref_data["max_uses"] - user_ref_data["used_count"]
+    embed = embed_base("🎫 Referans Durumu", f"**Kod:** `{user_code}`\n**Limit:** `{user_ref_data['max_uses']}`\n**Kalan Hak:** `{remaining}`")
     footer(embed, interaction)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -254,11 +373,17 @@ async def get_db_lines(url):
 @bot.tree.command(name="dlookup", description="Discord ID ile scammer ve sızıntı veritabanı taraması")
 @app_commands.checks.cooldown(1, 3.0)
 async def dlookup(interaction: discord.Interaction, uid: str):
+    if not await check_access(interaction):
+        await interaction.response.send_message("Bu botu kullanabilmek için geçerli bir referans koduna ihtiyacın var!", ephemeral=True)
+        return
+
     await interaction.response.defer(ephemeral=True)
 
     if not uid.isdigit():
         await interaction.followup.send("Geçerli bir Discord ID gir.", ephemeral=True)
         return
+
+    await send_log(interaction, "dlookup", uid)
 
     try:
         user = await bot.fetch_user(int(uid))
@@ -295,8 +420,13 @@ async def dlookup(interaction: discord.Interaction, uid: str):
 )
 @app_commands.checks.cooldown(1, 10.0)
 async def email_osint(interaction: discord.Interaction, email: str):
+    if not await check_access(interaction):
+        await interaction.response.send_message("Bu botu kullanabilmek için geçerli bir referans koduna ihtiyacın var!", ephemeral=True)
+        return
+
     await interaction.response.defer(ephemeral=True)
     email = email.strip().lower()
+    await send_log(interaction, "email-osint", email)
 
     if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
         await interaction.followup.send("Geçerli bir e-posta adresi gir.", ephemeral=True)
@@ -394,8 +524,13 @@ async def email_osint(interaction: discord.Interaction, email: str):
 )
 @app_commands.checks.cooldown(1, 5.0)
 async def email_search(interaction: discord.Interaction, email: str):
+    if not await check_access(interaction):
+        await interaction.response.send_message("Bu botu kullanabilmek için geçerli bir referans koduna ihtiyacın var!", ephemeral=True)
+        return
+
     await interaction.response.defer(ephemeral=True)
     email = email.strip().lower()
+    await send_log(interaction, "email-search", email)
 
     if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
         await interaction.followup.send("Geçerli bir e-posta adresi gir.", ephemeral=True)
@@ -477,6 +612,10 @@ async def loading_bar(interaction):
 @bot.tree.command(name="emailfinder", description="Belirtilen domain ile ilişkili açık e-postaları ara")
 @app_commands.checks.cooldown(1, 15.0)
 async def emailfinder(interaction: discord.Interaction, domain: str):
+    if not await check_access(interaction):
+        await interaction.response.send_message("Bu botu kullanabilmek için geçerli bir referans koduna ihtiyacın var!", ephemeral=True)
+        return
+
     if bot.is_processing:
         await interaction.response.send_message("Bot şu an başka bir tarama yürütüyor. Lütfen bekleyin.", ephemeral=True)
         return
@@ -490,6 +629,7 @@ async def emailfinder(interaction: discord.Interaction, domain: str):
 
     try:
         await interaction.response.defer(ephemeral=True)
+        await send_log(interaction, "emailfinder", domain)
         await loading_bar(interaction)
 
         loop = asyncio.get_running_loop()
@@ -532,7 +672,12 @@ async def emailfinder(interaction: discord.Interaction, domain: str):
 @bot.tree.command(name="ara", description="Discord hesap bilgileri")
 @app_commands.checks.cooldown(1, 5.0)
 async def ara(interaction: discord.Interaction, user_id: str):
+    if not await check_access(interaction):
+        await interaction.response.send_message("Bu botu kullanabilmek için geçerli bir referans koduna ihtiyacın var!", ephemeral=True)
+        return
+
     await interaction.response.defer(ephemeral=True)
+    await send_log(interaction, "ara", user_id)
 
     try:
         if not user_id.isdigit():
@@ -577,7 +722,12 @@ async def ara(interaction: discord.Interaction, user_id: str):
 )
 @app_commands.checks.cooldown(1, 10.0)
 async def ip_lookup(interaction: discord.Interaction, ip_address: str):
+    if not await check_access(interaction):
+        await interaction.response.send_message("Bu botu kullanabilmek için geçerli bir referans koduna ihtiyacın var!", ephemeral=True)
+        return
+
     await interaction.response.defer(ephemeral=True)
+    await send_log(interaction, "ip-lookup", ip_address)
 
     try:
         ip = ipaddress.ip_address(ip_address.strip())
@@ -734,7 +884,12 @@ PHONE_TYPES = {
 )
 @app_commands.checks.cooldown(1, 5.0)
 async def phone_lookup(interaction: discord.Interaction, phone_number: str):
+    if not await check_access(interaction):
+        await interaction.response.send_message("Bu botu kullanabilmek için geçerli bir referans koduna ihtiyacın var!", ephemeral=True)
+        return
+
     await interaction.response.defer(ephemeral=True)
+    await send_log(interaction, "phone-sorgu", phone_number)
 
     raw = phone_number.strip()
     if not raw.startswith("+"):
@@ -901,7 +1056,12 @@ async def scan_username(username):
 @bot.tree.command(name="username", description="Herkese açık profil eşleşmeleri")
 @app_commands.checks.cooldown(1, 60.0)
 async def username_check(interaction: discord.Interaction, username: str):
+    if not await check_access(interaction):
+        await interaction.response.send_message("Bu botu kullanabilmek için geçerli bir referans koduna ihtiyacın var!", ephemeral=True)
+        return
+
     await interaction.response.defer(ephemeral=True)
+    await send_log(interaction, "username", username)
 
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,50}", username):
         await interaction.followup.send("Kullanıcı adı geçersiz.", ephemeral=True)
@@ -985,7 +1145,12 @@ def rdap_registrar(data):
 @bot.tree.command(name="domain-sorgu", description="Domain kayıt bilgisi (RDAP)")
 @app_commands.checks.cooldown(1, 10.0)
 async def domain_lookup(interaction: discord.Interaction, domain_name: str):
+    if not await check_access(interaction):
+        await interaction.response.send_message("Bu botu kullanabilmek için geçerli bir referans koduna ihtiyacın var!", ephemeral=True)
+        return
+
     await interaction.response.defer(ephemeral=True)
+    await send_log(interaction, "domain-sorgu", domain_name)
 
     domain_name = domain_name.strip().lower()
     if not DOMAIN_RE.fullmatch(domain_name):
