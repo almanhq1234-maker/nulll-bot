@@ -1,22 +1,32 @@
-
 import os
 import re
+import ssl
+import socket
 import asyncio
 import datetime
 import urllib.parse
 import ipaddress
+import time
+import io
+import subprocess
 from threading import Thread
-from concurrent.futures import ThreadPoolExecutor
 
+import aiohttp
 import requests
-import whois
 import discord
+import dns.asyncresolver
+import dns.exception
+import dns.resolver
+import phonenumbers
+from phonenumbers import carrier, geocoder, timezone as pn_timezone
+from discord import app_commands
 from discord.ext import commands
 from flask import Flask
 
 # ==================== CONFIG ====================
 
 app = Flask(__name__)
+
 
 @app.route("/")
 def home():
@@ -38,20 +48,38 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
+UA = {"User-Agent": "NULLL-INTELLIGENCE/2.0"}
+
 
 class NullBot(commands.Bot):
+    http_session: aiohttp.ClientSession = None
+    is_processing: bool = False
+
     async def setup_hook(self):
+        self.http_session = aiohttp.ClientSession(headers=UA)
         await self.tree.sync()
         print("Slash komutları senkronize edildi.")
+
+    async def close(self):
+        if self.http_session and not self.http_session.closed:
+            await self.http_session.close()
+        await super().close()
 
 
 bot = NullBot(command_prefix="!", intents=intents)
 TOKEN = os.getenv("DISCORD_TOKEN")
 HIBP_API_KEY = os.getenv("HIBP_API_KEY", "")
+ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY", "")  # opsiyonel
 
 COLOR = discord.Color.from_rgb(47, 49, 54)
+
+# Eski senkron istemci: e-posta modülleri için.
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "NULLL-INTELLIGENCE/1.0"})
+
+DOMAIN_RE = re.compile(
+    r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
+)
 
 
 def embed_base(title, description=None, color=COLOR):
@@ -81,12 +109,73 @@ async def get_json(url, params=None, headers=None, timeout=12):
     return await asyncio.to_thread(request)
 
 
+async def aget_json(url, params=None, headers=None, timeout=12):
+    """aiohttp ile JSON al. 404 durumunda None döner."""
+    async with bot.http_session.get(
+        url,
+        params=params,
+        headers=headers,
+        timeout=aiohttp.ClientTimeout(total=timeout)
+    ) as resp:
+        if resp.status == 404:
+            return None
+        resp.raise_for_status()
+        return await resp.json(content_type=None)
+
+
+# ---------- Güvenlik yardımcıları (SSRF koruması) ----------
+
+async def resolve_public(host: str):
+    try:
+        ip = ipaddress.ip_address(host)
+        if not ip.is_global:
+            raise ValueError("Özel/yerel IP adreslerine istek gönderilemez.")
+        return [str(ip)]
+    except ValueError as exc:
+        if "istek gönderilemez" in str(exc):
+            raise
+
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise ValueError("Domain çözümlenemedi.")
+
+    ips = list({i[4][0] for i in infos})
+    if not ips:
+        raise ValueError("Domain çözümlenemedi.")
+
+    for item in ips:
+        if not ipaddress.ip_address(item.split("%")[0]).is_global:
+            raise ValueError("Hedef özel/yerel bir adrese çözülüyor.")
+    return ips
+
+
+# ---------- Cooldown / hata yönetimi ----------
+
+@bot.tree.error
+async def on_tree_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.CommandOnCooldown):
+        msg = f"Çok hızlısın. {error.retry_after:.0f} sn sonra tekrar dene."
+    else:
+        print("TREE ERROR:", type(error).__name__, str(error)[:300])
+        msg = "Komut çalıştırılırken hata oluştu."
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception:
+        pass
+
+
 @bot.event
 async def on_ready():
     print(f"NULLL INTELLIGENCE aktif: {bot.user} ({bot.user.id})")
 
 
-# ==================== EMAIL BREACH ====================
+# ==================== EMAIL BREACH (Sızıntı Analizi) ====================
 
 def parse_names(data):
     result = []
@@ -118,7 +207,6 @@ def parse_records(data):
             for item in value:
                 walk(item)
         elif isinstance(value, dict):
-            # Yalnızca ihlal kaydı olabilecek nesneleri al.
             if any(
                 key in value for key in (
                     "exposedData", "exposed_data", "xposed_data",
@@ -142,6 +230,7 @@ def parse_records(data):
     name="email-sızıntı",
     description="E-posta veri ihlali ve sızıntı kaynağı kontrolü"
 )
+@app_commands.checks.cooldown(1, 10.0)
 async def email_leak(interaction: discord.Interaction, email: str):
     await interaction.response.defer(ephemeral=True)
 
@@ -157,7 +246,6 @@ async def email_leak(interaction: discord.Interaction, email: str):
         return
 
     try:
-        # 1. XposedOrNot ayrıntılı analiz
         analytics = {}
         analytics_error = None
 
@@ -177,7 +265,6 @@ async def email_leak(interaction: discord.Interaction, email: str):
         records = parse_records(analytics) if analytics else []
         names = parse_names(analytics) if analytics else []
 
-        # 2. Temel XposedOrNot kontrolü
         basic_error = None
         if not names and not records:
             try:
@@ -194,7 +281,6 @@ async def email_leak(interaction: discord.Interaction, email: str):
                 print("XON basic:", type(exc).__name__, str(exc)[:300])
                 basic_error = 0
 
-        # 3. HIBP, yalnızca kullanıcı API anahtarı tanımladıysa
         hibp_error = None
         hibp_records = []
 
@@ -227,7 +313,6 @@ async def email_leak(interaction: discord.Interaction, email: str):
             f"**Sorgulanan e-posta:** `{email}`"
         )
 
-        # HIBP yanıtlarını da kayıt listesine dönüştür.
         for record in hibp_records:
             if isinstance(record, dict):
                 hibp_name = record.get("Name", "Bilinmeyen ihlal")
@@ -290,7 +375,6 @@ async def email_leak(interaction: discord.Interaction, email: str):
                 inline=False
             )
 
-            # Kayıtları isimleri üzerinden birleştir.
             by_name = {}
 
             for record in records:
@@ -350,7 +434,6 @@ async def email_leak(interaction: discord.Interaction, email: str):
                     or record.get("Description")
                 )
                 if description:
-                    # HTML etiketlerini kaldır.
                     description = re.sub(
                         r"<[^>]*>", " ", str(description)
                     )
@@ -392,9 +475,89 @@ async def email_leak(interaction: discord.Interaction, email: str):
         )
 
 
+# ==================== EMAILFINDER (Domain Bazlı E-Posta Arama) ====================
+
+def filter_emails(email_list):
+    return [email for email in email_list if not (email.startswith('u0027@') or email.startswith('22@'))]
+
+async def loading_bar(interaction):
+    stages = [
+        "🔄 E-postalar taranıyor [▒▒▒▒▒▒▒▒▒▒] 0%",
+        "🔄 E-postalar taranıyor [█▒▒▒▒▒▒▒▒▒] 10%",
+        "🔄 E-postalar taranıyor [██▒▒▒▒▒▒▒▒] 20%",
+        "🔄 E-postalar taranıyor [███▒▒▒▒▒▒▒] 30%",
+        "🔄 E-postalar taranıyor [████▒▒▒▒▒▒] 40%",
+        "🔄 E-postalar taranıyor [█████▒▒▒▒▒] 50%",
+        "🔄 E-postalar taranıyor [██████▒▒▒▒] 60%",
+        "🔄 E-postalar taranıyor [███████▒▒▒] 70%",
+        "🔄 E-postalar taranıyor [████████▒▒] 80%",
+        "🔄 E-postalar taranıyor [█████████▒] 90%",
+        "🔄 E-postalar taranıyor [██████████] 100%",
+    ]
+    for stage in stages:
+        try:
+            await interaction.edit_original_response(content=stage)
+        except Exception:
+            pass
+        await asyncio.sleep(0.4)
+
+@bot.tree.command(name="emailfinder", description="Belirtilen domain ile ilişkili açık e-postaları ara")
+@app_commands.checks.cooldown(1, 15.0)
+async def emailfinder(interaction: discord.Interaction, domain: str):
+    if bot.is_processing:
+        await interaction.response.send_message("Bot şu an başka bir tarama yürütüyor. Lütfen bekleyin.", ephemeral=True)
+        return
+
+    domain = domain.strip().lower()
+    if not DOMAIN_RE.fullmatch(domain):
+        await interaction.response.send_message("Geçerli bir domain adı gir.", ephemeral=True)
+        return
+
+    bot.is_processing = True
+
+    try:
+        await interaction.response.defer(ephemeral=True)
+        await loading_bar(interaction)
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(['emailfinder', '-d', domain], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        )
+
+        if result.returncode == 0:
+            emails = re.findall(r'[\w\.-]+@[\w\.-]+', result.stdout)
+            filtered_emails = filter_emails(emails)
+
+            if filtered_emails:
+                total_emails = len(filtered_emails)
+                email_list_message = '\n'.join(filtered_emails)
+                final_message = f'**Bulunan e-posta sayısı (filtrelenmiş): {total_emails}**'
+
+                if len(email_list_message) > 1800:
+                    file_io = io.StringIO(email_list_message)
+                    await interaction.edit_original_response(content=f'{final_message}\nSonuçlar çok uzun olduğu için dosya olarak gönderildi.')
+                    await interaction.followup.send(file=discord.File(file_io, filename=f'{domain}_emails.txt'), ephemeral=True)
+                else:
+                    await interaction.edit_original_response(content=f'{final_message}\n```text\n{email_list_message}\n```')
+            else:
+                await interaction.edit_original_response(content='Belirtilen domain için geçerli e-posta bulunamadı.')
+        else:
+            stderr_msg = result.stderr.strip() or "Bilinmeyen hata"
+            await interaction.edit_original_response(content=f'Tarama hatası: `{stderr_msg[:500]}`')
+
+    except Exception as e:
+        print("emailfinder hatası:", repr(e))
+        await interaction.edit_original_response(content='E-posta arama işlemi sırasında bir hata oluştu.')
+
+    finally:
+        bot.is_processing = False
+
+
 # ==================== DISCORD USER ====================
 
 @bot.tree.command(name="ara", description="Discord hesap bilgileri")
+@app_commands.checks.cooldown(1, 5.0)
 async def ara(interaction: discord.Interaction, user_id: str):
     await interaction.response.defer(ephemeral=True)
 
@@ -420,9 +583,14 @@ async def ara(interaction: discord.Interaction, user_id: str):
             inline=False
         )
 
+        if user.banner:
+            embed.set_image(url=user.banner.url)
+
         footer(embed, interaction)
         await interaction.followup.send(embed=embed)
 
+    except discord.NotFound:
+        await interaction.followup.send("Kullanıcı bulunamadı.", ephemeral=True)
     except Exception as exc:
         print("ARA:", repr(exc))
         await interaction.followup.send("Sorgu başarısız.", ephemeral=True)
@@ -430,65 +598,142 @@ async def ara(interaction: discord.Interaction, user_id: str):
 
 # ==================== IP LOOKUP ====================
 
-@bot.tree.command(name="ip-lookup", description="Genel IP bilgileri")
+@bot.tree.command(
+    name="ip-lookup",
+    description="Genel IP bilgileri, açık portlar ve itibar"
+)
+@app_commands.checks.cooldown(1, 10.0)
 async def ip_lookup(interaction: discord.Interaction, ip_address: str):
     await interaction.response.defer(ephemeral=True)
 
     try:
         ip = ipaddress.ip_address(ip_address.strip())
+    except ValueError:
+        await interaction.followup.send("Geçersiz IP.", ephemeral=True)
+        return
 
-        if not ip.is_global:
-            await interaction.followup.send(
-                "Genel bir IP adresi gir.", ephemeral=True
+    if not ip.is_global:
+        await interaction.followup.send("Genel bir IP adresi gir.", ephemeral=True)
+        return
+
+    try:
+        geo_task = aget_json(f"https://ipwho.is/{ip}")
+        idb_task = aget_json(f"https://internetdb.shodan.io/{ip}")
+        abuse_task = None
+        if ABUSEIPDB_KEY:
+            abuse_task = aget_json(
+                "https://api.abuseipdb.com/api/v2/check",
+                params={"ipAddress": str(ip), "maxAgeInDays": 90},
+                headers={"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
             )
+
+        tasks = [geo_task, idb_task] + ([abuse_task] if abuse_task else [])
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        geo = results[0] if isinstance(results[0], dict) else None
+        idb = results[1] if isinstance(results[1], dict) else None
+        abuse = None
+        if abuse_task and isinstance(results[2], dict):
+            abuse = results[2].get("data")
+
+        if not geo or not geo.get("success"):
+            await interaction.followup.send("IP bulunamadı.", ephemeral=True)
             return
 
-        data = await get_json(
-            f"http://ip-api.com/json/{ip}",
-            params={"fields": (
-                "status,message,continent,country,countryCode,"
-                "regionName,city,zip,lat,lon,timezone,isp,org,as,proxy"
-            )}
-        )
-
-        if data.get("status") != "success":
-            await interaction.followup.send(
-                "IP bulunamadı.", ephemeral=True
-            )
-            return
+        conn = geo.get("connection") or {}
+        tz = geo.get("timezone") or {}
+        sec = geo.get("security") or {}
 
         embed = embed_base(
             "🌐 NULLL INTELLIGENCE | IP Analysis",
             f"**IP:** `{ip}`"
         )
 
-        for label, key in [
-            ("Ülke", "country"), ("Bölge", "regionName"),
-            ("Şehir", "city"), ("Posta kodu", "zip"),
-            ("Zaman dilimi", "timezone"), ("ISP", "isp"),
-            ("Organizasyon", "org"), ("AS", "as"),
-            ("Proxy sinyali", "proxy")
-        ]:
+        rows = [
+            ("Ülke", geo.get("country")),
+            ("Bölge", geo.get("region")),
+            ("Şehir", geo.get("city")),
+            ("Posta kodu", geo.get("postal")),
+            ("Zaman dilimi", tz.get("id")),
+            ("ISP", conn.get("isp")),
+            ("Organizasyon", conn.get("org")),
+            ("ASN", conn.get("asn")),
+        ]
+        for label, value in rows:
             embed.add_field(
                 name=label,
-                value=str(data.get(key) or "Bilinmiyor")[:200],
+                value=str(value or "Bilinmiyor")[:200],
                 inline=True
             )
 
-        lat, lon = data.get("lat"), data.get("lon")
+        if sec:
+            flags = [
+                k.upper() for k in ("proxy", "vpn", "tor", "hosting")
+                if sec.get(k)
+            ]
+            embed.add_field(
+                name="Sinyaller",
+                value=", ".join(flags) if flags else "Yok",
+                inline=True
+            )
+
+        if idb:
+            ports = idb.get("ports") or []
+            vulns = idb.get("vulns") or []
+            tags = idb.get("tags") or []
+            hostnames = idb.get("hostnames") or []
+
+            embed.add_field(
+                name="Açık portlar (Shodan InternetDB)",
+                value=(", ".join(map(str, ports[:30])) or "Yok")[:1000],
+                inline=False
+            )
+            if vulns:
+                embed.add_field(
+                    name=f"Bilinen CVE ({len(vulns)})",
+                    value=", ".join(vulns[:15])[:1000],
+                    inline=False
+                )
+            if tags:
+                embed.add_field(
+                    name="Etiketler",
+                    value=", ".join(tags)[:500],
+                    inline=True
+                )
+            if hostnames:
+                embed.add_field(
+                    name="Hostname",
+                    value=", ".join(hostnames[:5])[:500],
+                    inline=True
+                )
+
+        if abuse:
+            score = abuse.get("abuseConfidenceScore", 0)
+            embed.add_field(
+                name="AbuseIPDB",
+                value=(
+                    f"Skor: **{score}/100**\n"
+                    f"Rapor sayısı (90 gün): {abuse.get('totalReports', 0)}\n"
+                    f"Kullanım türü: {abuse.get('usageType') or 'Bilinmiyor'}"
+                ),
+                inline=False
+            )
+            if score >= 50:
+                embed.color = discord.Color.red()
+            elif score >= 10:
+                embed.color = discord.Color.orange()
+
+        lat, lon = geo.get("latitude"), geo.get("longitude")
         if lat is not None and lon is not None:
-            url = f"https://maps.google.com/?q={lat},{lon}"
             embed.add_field(
                 name="Harita",
-                value=f"[Yaklaşık konumu aç]({url})",
+                value=f"[Yaklaşık konumu aç](https://maps.google.com/?q={lat},{lon})",
                 inline=False
             )
 
         footer(embed, interaction)
         await interaction.followup.send(embed=embed)
 
-    except ValueError:
-        await interaction.followup.send("Geçersiz IP.", ephemeral=True)
     except Exception as exc:
         print("IP:", repr(exc))
         await interaction.followup.send("IP sorgusu başarısız.", ephemeral=True)
@@ -496,36 +741,90 @@ async def ip_lookup(interaction: discord.Interaction, ip_address: str):
 
 # ==================== PHONE LOOKUP ====================
 
-@bot.tree.command(name="phone-sorgu", description="Telefon numarası biçim kontrolü")
+PHONE_TYPES = {
+    phonenumbers.PhoneNumberType.MOBILE: "Mobil",
+    phonenumbers.PhoneNumberType.FIXED_LINE: "Sabit hat",
+    phonenumbers.PhoneNumberType.FIXED_LINE_OR_MOBILE: "Sabit/Mobil",
+    phonenumbers.PhoneNumberType.TOLL_FREE: "Ücretsiz hat",
+    phonenumbers.PhoneNumberType.PREMIUM_RATE: "Ücretli hat",
+    phonenumbers.PhoneNumberType.VOIP: "VoIP",
+    phonenumbers.PhoneNumberType.PERSONAL_NUMBER: "Kişisel numara",
+    phonenumbers.PhoneNumberType.PAGER: "Çağrı cihazı",
+    phonenumbers.PhoneNumberType.UAN: "UAN",
+    phonenumbers.PhoneNumberType.UNKNOWN: "Bilinmiyor",
+}
+
+
+@bot.tree.command(
+    name="phone-sorgu",
+    description="Telefon numarası doğrulama (ülke, hat türü, operatör)"
+)
+@app_commands.checks.cooldown(1, 5.0)
 async def phone_lookup(interaction: discord.Interaction, phone_number: str):
     await interaction.response.defer(ephemeral=True)
 
-    number = "".join(c for c in phone_number if c.isdigit())
+    raw = phone_number.strip()
+    if not raw.startswith("+"):
+        raw = "+" + "".join(c for c in raw if c.isdigit())
 
-    if not 7 <= len(number) <= 15:
-        await interaction.followup.send("Numara geçersiz.", ephemeral=True)
+    try:
+        num = phonenumbers.parse(raw, None)
+    except phonenumbers.NumberParseException:
+        await interaction.followup.send(
+            "Numara ayrıştırılamadı. Ülke koduyla gir (örn. +905xxxxxxxxx).",
+            ephemeral=True
+        )
         return
 
-    country = "Bilinmiyor"
-    for prefix, name in [
-        ("90", "Türkiye"), ("44", "Birleşik Krallık"),
-        ("49", "Almanya"), ("1", "ABD/Kanada")
-    ]:
-        if number.startswith(prefix):
-            country = name
-            break
+    valid = phonenumbers.is_valid_number(num)
+    possible = phonenumbers.is_possible_number(num)
 
-    embed = embed_base("📱 NULLL INTELLIGENCE | Phone Lookup")
-    embed.add_field(name="Numara", value=f"`+{number}`", inline=True)
-    embed.add_field(name="Ülke kodu tahmini", value=country, inline=True)
+    embed = embed_base(
+        "📱 NULLL INTELLIGENCE | Phone Lookup",
+        color=discord.Color.green() if valid else discord.Color.orange()
+    )
     embed.add_field(
-        name="Not",
-        value="Operatör ve hat türü bu komut tarafından doğrulanmaz.",
+        name="Uluslararası biçim",
+        value=f"`{phonenumbers.format_number(num, phonenumbers.PhoneNumberFormat.INTERNATIONAL)}`",
+        inline=True
+    )
+    embed.add_field(
+        name="Geçerli mi?",
+        value="Evet" if valid else ("Biçim olası" if possible else "Hayır"),
+        inline=True
+    )
+    embed.add_field(
+        name="Ülke kodu",
+        value=f"+{num.country_code} ({phonenumbers.region_code_for_number(num) or '?'})",
+        inline=True
+    )
+    embed.add_field(
+        name="Hat türü",
+        value=PHONE_TYPES.get(phonenumbers.number_type(num), "Bilinmiyor"),
+        inline=True
+    )
+    embed.add_field(
+        name="Bölge",
+        value=geocoder.description_for_number(num, "tr") or "Bilinmiyor",
+        inline=True
+    )
+    embed.add_field(
+        name="Operatör (ilk tahsis)",
+        value=carrier.name_for_number(num, "tr") or "Bilinmiyor",
+        inline=True
+    )
+    zones = pn_timezone.time_zones_for_number(num)
+    embed.add_field(
+        name="Zaman dilimi",
+        value=", ".join(zones[:3]) if zones else "Bilinmiyor",
         inline=False
     )
     embed.add_field(
-        name="WhatsApp",
-        value=f"[Bağlantıyı aç](https://wa.me/{number})",
+        name="Not",
+        value=(
+            "Operatör bilgisi numaranın ilk tahsis edildiği operatördür; "
+            "numara taşıma (MNP) yapılmış olabilir."
+        ),
         inline=False
     )
 
@@ -539,84 +838,95 @@ WMN_URL = (
     "https://raw.githubusercontent.com/"
     "WebBreacher/WhatsMyName/main/wmn-data.json"
 )
+WMN_TTL = 24 * 3600
 wmn_cache = None
+wmn_loaded_at = 0.0
 wmn_lock = asyncio.Lock()
 
 
 async def load_wmn():
-    global wmn_cache
+    global wmn_cache, wmn_loaded_at
 
     async with wmn_lock:
-        if wmn_cache is not None:
+        if wmn_cache is not None and time.time() - wmn_loaded_at < WMN_TTL:
             return wmn_cache
 
         try:
-            wmn_cache = await get_json(WMN_URL, timeout=15)
+            wmn_cache = await aget_json(WMN_URL, timeout=20)
+            wmn_loaded_at = time.time()
             return wmn_cache
         except Exception as exc:
             print("WMN:", repr(exc))
-            return None
+            return wmn_cache
 
 
-def probe_site(site, username):
-    if site.get("request_method", "GET").upper() != "GET":
-        return None
-
+async def probe_site(session, sem, site, username):
     template = site.get("uri_check", "")
     if "{account}" not in template:
         return None
+    if site.get("post_body") or site.get("valid") is False:
+        return None
 
-    url = template.replace(
-        "{account}", urllib.parse.quote(username, safe="")
-    )
+    url = template.replace("{account}", urllib.parse.quote(username, safe=""))
 
-    try:
-        response = SESSION.get(url, timeout=4, allow_redirects=True)
-        body = response.text or ""
-
-        m_code = site.get("m_code")
-        m_string = site.get("m_string") or ""
-        e_code = site.get("e_code")
-        e_string = site.get("e_string") or ""
-
-        if m_code is not None and response.status_code == m_code:
+    async with sem:
+        try:
+            async with session.get(
+                url,
+                allow_redirects=True,
+                timeout=aiohttp.ClientTimeout(total=7)
+            ) as resp:
+                raw = await resp.content.read(300_000)
+                body = raw.decode("utf-8", errors="ignore")
+                status = resp.status
+        except Exception:
             return None
-        if m_string and m_string in body:
-            return None
 
-        hit = bool(e_string and e_string in body)
-        if e_code is not None and response.status_code == e_code:
-            hit = hit or not e_string
+    m_code = site.get("m_code")
+    m_string = site.get("m_string") or ""
+    e_code = site.get("e_code")
+    e_string = site.get("e_string") or ""
 
-        if hit:
-            return {
-                "name": site.get("name", "Unknown"),
-                "url": url
-            }
-    except Exception:
-        pass
+    if m_code is not None and status == m_code:
+        return None
+    if m_string and m_string in body:
+        return None
 
-    return None
+    if e_code is None and not e_string:
+        return None
+    if e_code is not None and status != e_code:
+        return None
+    if e_string and e_string not in body:
+        return None
+
+    return {
+        "name": site.get("name", "Unknown"),
+        "url": site.get("uri_pretty", "").replace("{account}", username) or url,
+        "cat": site.get("cat", "")
+    }
 
 
 async def scan_username(username):
     data = await load_wmn()
     if not data or not isinstance(data.get("sites"), list):
-        return []
+        return None, 0
 
-    loop = asyncio.get_running_loop()
+    sem = asyncio.Semaphore(40)
+    connector = aiohttp.TCPConnector(limit=60, ttl_dns_cache=300)
 
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        futures = [
-            loop.run_in_executor(pool, probe_site, site, username)
-            for site in data["sites"][:120]
-        ]
-        results = await asyncio.gather(*futures, return_exceptions=True)
+    async with aiohttp.ClientSession(headers=UA, connector=connector) as session:
+        sites = data["sites"]
+        results = await asyncio.gather(
+            *(probe_site(session, sem, s, username) for s in sites),
+            return_exceptions=True
+        )
 
-    return [r for r in results if isinstance(r, dict)]
+    hits = [r for r in results if isinstance(r, dict)]
+    return hits, len(sites)
 
 
 @bot.tree.command(name="username", description="Herkese açık profil eşleşmeleri")
+@app_commands.checks.cooldown(1, 60.0)
 async def username_check(interaction: discord.Interaction, username: str):
     await interaction.response.defer(ephemeral=True)
 
@@ -624,19 +934,50 @@ async def username_check(interaction: discord.Interaction, username: str):
         await interaction.followup.send("Kullanıcı adı geçersiz.", ephemeral=True)
         return
 
-    hits = await scan_username(username)
+    hits, total = await scan_username(username)
+
+    if hits is None:
+        await interaction.followup.send(
+            "Site listesi yüklenemedi, sonra tekrar dene.", ephemeral=True
+        )
+        return
+
     embed = embed_base(
         "🔎 NULLL INTELLIGENCE | Username Scan",
-        f"**Kullanıcı adı:** `{username}`"
+        f"**Kullanıcı adı:** `{username}`\n"
+        f"**Taranan site:** {total} | **Eşleşme:** {len(hits)}"
     )
 
     if hits:
-        for hit in hits[:15]:
+        hits.sort(key=lambda h: (h["cat"], h["name"].lower()))
+        lines = [f"[{h['name']}]({h['url']})" for h in hits]
+
+        chunk, chunks = "", []
+        for line in lines:
+            if len(chunk) + len(line) + 3 > 1000:
+                chunks.append(chunk)
+                chunk = ""
+            chunk += line + " • "
+        if chunk:
+            chunks.append(chunk)
+
+        for i, text in enumerate(chunks[:5], 1):
             embed.add_field(
-                name=hit["name"][:250],
-                value=f"[Profili aç]({hit['url']})",
+                name="Eşleşmeler" if i == 1 else f"Eşleşmeler ({i})",
+                value=text.rstrip(" • "),
                 inline=False
             )
+        if len(chunks) > 5:
+            embed.add_field(
+                name="Not",
+                value="Çok fazla eşleşme var, ilk bölüm gösterildi.",
+                inline=False
+            )
+        embed.add_field(
+            name="Uyarı",
+            value="Eşleşmeler aynı kişiye ait olduğunu kanıtlamaz; yanlış pozitif olabilir.",
+            inline=False
+        )
     else:
         embed.add_field(
             name="Sonuç",
@@ -648,148 +989,70 @@ async def username_check(interaction: discord.Interaction, username: str):
     await interaction.followup.send(embed=embed)
 
 
-# ==================== DOMAIN WHOIS ====================
+# ==================== DOMAIN (RDAP) ====================
 
-@bot.tree.command(name="domain-sorgu", description="Domain WHOIS")
+def rdap_event(data, action):
+    for ev in data.get("events", []):
+        if ev.get("eventAction") == action:
+            return ev.get("eventDate", "")[:10]
+    return None
+
+
+def rdap_registrar(data):
+    for ent in data.get("entities", []):
+        if "registrar" in ent.get("roles", []):
+            vcard = ent.get("vcardArray")
+            if vcard and len(vcard) > 1:
+                for item in vcard[1]:
+                    if item[0] == "fn":
+                        return item[3]
+    return None
+
+
+@bot.tree.command(name="domain-sorgu", description="Domain kayıt bilgisi (RDAP)")
+@app_commands.checks.cooldown(1, 10.0)
 async def domain_lookup(interaction: discord.Interaction, domain_name: str):
     await interaction.response.defer(ephemeral=True)
 
     domain_name = domain_name.strip().lower()
-
-    if not re.fullmatch(
-        r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}",
-        domain_name
-    ):
+    if not DOMAIN_RE.fullmatch(domain_name):
         await interaction.followup.send("Domain geçersiz.", ephemeral=True)
         return
 
     try:
-        result = await asyncio.to_thread(whois.whois, domain_name)
+        data = await aget_json(f"https://rdap.org/domain/{domain_name}", timeout=15)
+        if not data:
+            await interaction.followup.send("Domain kaydı bulunamadı.", ephemeral=True)
+            return
+
         embed = embed_base(
-            "🌐 NULLL INTELLIGENCE | WHOIS",
+            "🌐 NULLL INTELLIGENCE | Domain (RDAP)",
             f"**Domain:** `{domain_name}`"
         )
 
-        for label, attr in [
-            ("Registrar", "registrar"),
-            ("Oluşturulma", "creation_date"),
-            ("Bitiş", "expiration_date"),
-            ("Durum", "status")
-        ]:
-            embed.add_field(
-                name=label,
-                value=str(getattr(result, attr, None) or "Bilinmiyor")[:900],
-                inline=False
-            )
+        ns = [n.get("ldhName") for n in data.get("nameservers", []) if n.get("ldhName")]
+        created = rdap_event(data, "registration")
+        expires = rdap_event(data, "expiration")
+        registrar = rdap_registrar(data)
+
+        embed.add_field(name="Registrar", value=str(registrar or "Bilinmiyor"), inline=False)
+        embed.add_field(name="Oluşturulma", value=str(created or "Bilinmiyor"), inline=True)
+        embed.add_field(name="Bitiş tarihi", value=str(expires or "Bilinmiyor"), inline=True)
+        embed.add_field(name="Nameservers", value=", ".join(ns[:4]) if ns else "Bilinmiyor", inline=False)
 
         footer(embed, interaction)
         await interaction.followup.send(embed=embed)
 
     except Exception as exc:
-        print("WHOIS:", repr(exc))
-        await interaction.followup.send("WHOIS başarısız.", ephemeral=True)
+        print("RDAP ERROR:", repr(exc))
+        await interaction.followup.send("Domain sorgusu başarısız oldu.", ephemeral=True)
 
 
-# ==================== URL ANALYSIS ====================
-
-@bot.tree.command(name="url-analiz", description="URL HTTP durum kontrolü")
-async def url_analysis(interaction: discord.Interaction, target_url: str):
-    await interaction.response.defer(ephemeral=True)
-
-    if not target_url.startswith(("http://", "https://")):
-        target_url = "https://" + target_url
-
-    try:
-        parsed = urllib.parse.urlparse(target_url)
-
-        if (
-            parsed.scheme not in ("http", "https")
-            or not parsed.hostname
-            or parsed.username
-            or parsed.password
-        ):
-            await interaction.followup.send("URL geçersiz.", ephemeral=True)
-            return
-
-        try:
-            ip = ipaddress.ip_address(parsed.hostname)
-            if not ip.is_global:
-                await interaction.followup.send(
-                    "Özel IP adreslerine istek gönderilemez.",
-                    ephemeral=True
-                )
-                return
-        except ValueError:
-            if parsed.hostname.lower() == "localhost":
-                await interaction.followup.send(
-                    "Yerel adresler sorgulanamaz.",
-                    ephemeral=True
-                )
-                return
-
-        response = await asyncio.to_thread(
-            SESSION.get,
-            target_url,
-            timeout=8,
-            allow_redirects=False,
-            stream=True
-        )
-
-        status = response.status_code
-        response.close()
-
-        embed = embed_base(
-            "🌐 NULLL INTELLIGENCE | URL Analysis",
-            f"**URL:** `{target_url[:900]}`"
-        )
-        embed.add_field(name="HTTP durum kodu", value=str(status))
-        embed.add_field(
-            name="Güvenlik",
-            value="HTTP yanıtı sitenin güvenli olduğunu kanıtlamaz.",
-            inline=False
-        )
-
-        footer(embed, interaction)
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    except Exception as exc:
-        print("URL:", repr(exc))
-        await interaction.followup.send("URL kontrolü başarısız.", ephemeral=True)
-
-
-# ==================== ADDRESS MAP ====================
-
-@bot.tree.command(name="adres-sorgu", description="Adresi Google Maps'te aç")
-async def adres_sorgu(interaction: discord.Interaction, adres: str):
-    await interaction.response.defer(ephemeral=True)
-
-    encoded = urllib.parse.quote(adres.strip(), safe="")
-    url = "https://www.google.com/maps/search/?api=1&query=" + encoded
-
-    embed = embed_base(
-        "📍 NULLL INTELLIGENCE | Address Search",
-        f"**Adres:** `{adres[:900]}`"
-    )
-    embed.add_field(
-        name="Harita",
-        value=f"[Google Maps'te aç]({url})",
-        inline=False
-    )
-    embed.add_field(
-        name="Bilgilendirme",
-        value="Bu bağlantı adresi doğrulamaz veya bir kişinin konumunu tespit etmez.",
-        inline=False
-    )
-
-    footer(embed, interaction)
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-# ==================== START ====================
+# ==================== STARTUP ====================
 
 if __name__ == "__main__":
     if not TOKEN:
-        raise RuntimeError("DISCORD_TOKEN Render Environment içinde tanımlı değil.")
+        raise RuntimeError("DISCORD_TOKEN ortam değişkeni bulunamadı!")
 
     keep_alive()
     bot.run(TOKEN)
