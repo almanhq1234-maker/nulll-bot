@@ -91,6 +91,18 @@ DOMAIN_RE = re.compile(
     r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
 )
 
+# --- GRUP DM VE ÖZEL MESAJ UYUMU İÇİN CONTEXT AYARLARI ---
+USER_APP_CONTEXTS = app_commands.AppCommandContext(
+    guild=True,          # Sunucular
+    dm_channel=True,     # Özel Mesajlar (DM)
+    private_channel=True # Grup Sohbetleri (Group DMs)
+)
+
+USER_APP_INTEGRATION = app_commands.AppInstallationType(
+    guild=True, # Sunucu kurulumu
+    user=True   # Kullanıcı hesabı kurulumu
+)
+
 
 def embed_base(title, description=None, color=COLOR):
     return discord.Embed(
@@ -264,7 +276,7 @@ def save_refs(data):
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 
-@bot.tree.command(name="ref-uret", description="[Yalnızca Bot Sahibi] Arkadaşlara özel referans kodu oluşturur")
+@bot.tree.command(name="ref-uret", description="[Yalnızca Bot Sahibi] Arkadaşlara özel referans kodu oluşturur", contexts={USER_APP_CONTEXTS}, allowed_installs={USER_APP_INTEGRATION})
 @app_commands.describe(code="Oluşturulacak kod", uses="Kullanım hakkı sayısı")
 async def ref_uret(interaction: discord.Interaction, code: str, uses: int):
     if interaction.user.id != OWNER_ID:
@@ -290,7 +302,7 @@ async def ref_uret(interaction: discord.Interaction, code: str, uses: int):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="ref-kullan", description="Sana verilen referans kodunu aktif eder")
+@bot.tree.command(name="ref-kullan", description="Sana verilen referans kodunu aktif eder", contexts={USER_APP_CONTEXTS}, allowed_installs={USER_APP_INTEGRATION})
 @app_commands.describe(code="Aktif edilecek referans kodu")
 async def ref_kullan(interaction: discord.Interaction, code: str):
     await interaction.response.defer(ephemeral=True)
@@ -321,7 +333,7 @@ async def ref_kullan(interaction: discord.Interaction, code: str):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="ref-durum", description="Aktif ettiğin referans kodunu ve durumunu gösterir")
+@bot.tree.command(name="ref-durum", description="Aktif ettiğin referans kodunu ve durumunu gösterir", contexts={USER_APP_CONTEXTS}, allowed_installs={USER_APP_INTEGRATION})
 async def ref_durum(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     refs = load_refs()
@@ -370,7 +382,7 @@ async def get_db_lines(url):
     return []
 
 
-@bot.tree.command(name="dlookup", description="Discord ID ile scammer ve sızıntı veritabanı taraması")
+@bot.tree.command(name="dlookup", description="Discord ID ile scammer ve sızıntı veritabanı taraması", contexts={USER_APP_CONTEXTS}, allowed_installs={USER_APP_INTEGRATION})
 @app_commands.checks.cooldown(1, 3.0)
 async def dlookup(interaction: discord.Interaction, uid: str):
     if not await check_access(interaction):
@@ -416,7 +428,9 @@ async def dlookup(interaction: discord.Interaction, uid: str):
 
 @bot.tree.command(
     name="email-osint",
-    description="E-posta için platform eşleşmeleri, sızıntılar ve stealer log taraması"
+    description="E-posta için platform eşleşmeleri, sızıntılar ve stealer log taraması",
+    contexts={USER_APP_CONTEXTS},
+    allowed_installs={USER_APP_INTEGRATION}
 )
 @app_commands.checks.cooldown(1, 10.0)
 async def email_osint(interaction: discord.Interaction, email: str):
@@ -520,7 +534,9 @@ async def email_osint(interaction: discord.Interaction, email: str):
 
 @bot.tree.command(
     name="email-search",
-    description="E-posta için açık kaynak arama bağlantıları ve domain MX doğrulaması"
+    description="E-posta için açık kaynak arama bağlantıları ve domain MX doğrulaması",
+    contexts={USER_APP_CONTEXTS},
+    allowed_installs={USER_APP_INTEGRATION}
 )
 @app_commands.checks.cooldown(1, 5.0)
 async def email_search(interaction: discord.Interaction, email: str):
@@ -609,7 +625,12 @@ async def loading_bar(interaction):
         await asyncio.sleep(0.3)
 
 
-@bot.tree.command(name="emailfinder", description="Belirtilen domain ile ilişkili açık e-postaları ara")
+@bot.tree.command(
+    name="emailfinder",
+    description="Belirtilen domain ile ilişkili açık e-postaları ara",
+    contexts={USER_APP_CONTEXTS},
+    allowed_installs={USER_APP_INTEGRATION}
+)
 @app_commands.checks.cooldown(1, 15.0)
 async def emailfinder(interaction: discord.Interaction, domain: str):
     if not await check_access(interaction):
@@ -669,7 +690,12 @@ async def emailfinder(interaction: discord.Interaction, domain: str):
 
 # ==================== 5. DISCORD USER LOOKUP ====================
 
-@bot.tree.command(name="ara", description="Discord hesap bilgileri")
+@bot.tree.command(
+    name="ara",
+    description="Discord hesap bilgileri",
+    contexts={USER_APP_CONTEXTS},
+    allowed_installs={USER_APP_INTEGRATION}
+)
 @app_commands.checks.cooldown(1, 5.0)
 async def ara(interaction: discord.Interaction, user_id: str):
     if not await check_access(interaction):
@@ -718,7 +744,9 @@ async def ara(interaction: discord.Interaction, user_id: str):
 
 @bot.tree.command(
     name="ip-lookup",
-    description="Genel IP bilgileri, açık portlar ve itibar"
+    description="Genel IP bilgileri, açık portlar ve itibar",
+    contexts={USER_APP_CONTEXTS},
+    allowed_installs={USER_APP_INTEGRATION}
 )
 @app_commands.checks.cooldown(1, 10.0)
 async def ip_lookup(interaction: discord.Interaction, ip_address: str):
@@ -880,7 +908,9 @@ PHONE_TYPES = {
 
 @bot.tree.command(
     name="phone-sorgu",
-    description="Telefon numarası doğrulama (ülke, hat türü, operatör)"
+    description="Telefon numarası doğrulama (ülke, hat türü, operatör)",
+    contexts={USER_APP_CONTEXTS},
+    allowed_installs={USER_APP_INTEGRATION}
 )
 @app_commands.checks.cooldown(1, 5.0)
 async def phone_lookup(interaction: discord.Interaction, phone_number: str):
@@ -960,7 +990,7 @@ async def phone_lookup(interaction: discord.Interaction, phone_number: str):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-# ==================== 8. USERNAME SCAN ====================
+# ==================== 8. USERNAME SCAN (WhatsMyName Taraması) ====================
 
 WMN_URL = (
     "https://raw.githubusercontent.com/"
@@ -1053,7 +1083,12 @@ async def scan_username(username):
     return hits, len(sites)
 
 
-@bot.tree.command(name="username", description="Herkese açık profil eşleşmeleri")
+@bot.tree.command(
+    name="username",
+    description="Herkese açık profil eşleşmeleri (WhatsMyName)",
+    contexts={USER_APP_CONTEXTS},
+    allowed_installs={USER_APP_INTEGRATION}
+)
 @app_commands.checks.cooldown(1, 60.0)
 async def username_check(interaction: discord.Interaction, username: str):
     if not await check_access(interaction):
@@ -1142,7 +1177,12 @@ def rdap_registrar(data):
     return None
 
 
-@bot.tree.command(name="domain-sorgu", description="Domain kayıt bilgisi (RDAP)")
+@bot.tree.command(
+    name="domain-sorgu",
+    description="Domain kayıt bilgisi (RDAP)",
+    contexts={USER_APP_CONTEXTS},
+    allowed_installs={USER_APP_INTEGRATION}
+)
 @app_commands.checks.cooldown(1, 10.0)
 async def domain_lookup(interaction: discord.Interaction, domain_name: str):
     if not await check_access(interaction):
