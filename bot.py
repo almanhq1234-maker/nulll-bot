@@ -70,11 +70,10 @@ class NullBot(commands.Bot):
 bot = NullBot(command_prefix="!", intents=intents)
 TOKEN = os.getenv("DISCORD_TOKEN")
 HIBP_API_KEY = os.getenv("HIBP_API_KEY", "")
-ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY", "")  # opsiyonel
+ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY", "")
 
 COLOR = discord.Color.from_rgb(47, 49, 54)
 
-# Eski senkron istemci: e-posta modülleri için.
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "NULLL-INTELLIGENCE/1.0"})
 
@@ -111,7 +110,6 @@ async def get_json(url, params=None, headers=None, timeout=12):
 
 
 async def aget_json(url, params=None, headers=None, timeout=12):
-    """aiohttp ile JSON al. 404 durumunda None döner."""
     async with bot.http_session.get(
         url,
         params=params,
@@ -123,36 +121,6 @@ async def aget_json(url, params=None, headers=None, timeout=12):
         resp.raise_for_status()
         return await resp.json(content_type=None)
 
-
-# ---------- Güvenlik yardımcıları (SSRF koruması) ----------
-
-async def resolve_public(host: str):
-    try:
-        ip = ipaddress.ip_address(host)
-        if not ip.is_global:
-            raise ValueError("Özel/yerel IP adreslerine istek gönderilemez.")
-        return [str(ip)]
-    except ValueError as exc:
-        if "istek gönderilemez" in str(exc):
-            raise
-
-    loop = asyncio.get_running_loop()
-    try:
-        infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    except socket.gaierror:
-        raise ValueError("Domain çözümlenemedi.")
-
-    ips = list({i[4][0] for i in infos})
-    if not ips:
-        raise ValueError("Domain çözümlenemedi.")
-
-    for item in ips:
-        if not ipaddress.ip_address(item.split("%")[0]).is_global:
-            raise ValueError("Hedef özel/yerel bir adrese çözülüyor.")
-    return ips
-
-
-# ---------- Cooldown / hata yönetimi ----------
 
 @bot.tree.error
 async def on_tree_error(interaction: discord.Interaction, error):
@@ -176,7 +144,59 @@ async def on_ready():
     print(f"NULLL INTELLIGENCE aktif: {bot.user} ({bot.user.id})")
 
 
-# ==================== EMAIL OSINT & BREACH (Kapsamlı İstihbarat) ====================
+# ==================== 1. DLOOKUP (Discord ID & Leak Veritabanı Sorgu) ====================
+
+SCAMMER_URL = "https://raw.githubusercontent.com/im-silent/newdbs/refs/heads/main/dbs/ScammerAlert!%20-%20ALERTS%20-%20%E2%9B%94%E2%94%83known-scammers%20%5B888763420055318559%5D.csv"
+RESTORECORD_URL = "https://raw.githubusercontent.com/im-silent/newdbs/refs/heads/main/dbs/RestoreCord.sql"
+
+def find_line_in_db(url, uid):
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            lines = r.text.splitlines()
+            for line in lines:
+                if uid in line:
+                    return line
+        return None
+    except:
+        return None
+
+@bot.tree.command(name="dlookup", description="Discord ID ile scammer ve sızıntı (RestoreCord) veritabanı taraması")
+@app_commands.checks.cooldown(1, 10.0)
+async def dlookup(interaction: discord.Interaction, uid: str):
+    await interaction.response.defer(ephemeral=True)
+
+    if not uid.isdigit():
+        await interaction.followup.send("Geçerli bir Discord ID gir.", ephemeral=True)
+        return
+
+    try:
+        user = await bot.fetch_user(int(uid))
+        username = f"{user.name}#{user.discriminator}" if user.discriminator != "0" else user.name
+    except:
+        username = "Bulunamadı"
+
+    # Ağ aramalarını asenkron yürütmek için thread havuzuna atıyoruz
+    scammer_line = await asyncio.to_thread(find_line_in_db, SCAMMER_URL, uid)
+    is_scammer = "True" if scammer_line else "False"
+    
+    restorecord_line = await asyncio.to_thread(find_line_in_db, RESTORECORD_URL, uid)
+    leak_display = restorecord_line if restorecord_line else "None Found"
+
+    embed = embed_base(
+        f"🔎 NULLL INTELLIGENCE | DLookup Results",
+        f"**Sorgulanan ID:** `{uid}`"
+    )
+    
+    embed.add_field(name="👤 Kullanıcı Adı", value=f"`{username}`", inline=True)
+    embed.add_field(name="🚫 Scammer Durumu", value=f"`{is_scammer}`", inline=True)
+    embed.add_field(name="📂 Sızıntı Bilgisi (RestoreCord)", value=f"```{leak_display[:1000]}```", inline=False)
+    
+    footer(embed, interaction)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ==================== 2. EMAIL OSINT & BREACH ANALYSIS ====================
 
 @bot.tree.command(
     name="email-osint",
@@ -276,11 +296,11 @@ async def email_osint(interaction: discord.Interaction, email: str):
             os.remove(output_file)
 
 
-# ==================== EMAIL SEARCH & DORKING ====================
+# ==================== 3. EMAIL SEARCH & DORKING ====================
 
 @bot.tree.command(
     name="email-search",
-    description="E-posta için açık kaynak arama bağlantıları ve domain MX doğrulaması"
+    description="E-posta adresi için açık kaynak arama bağlantıları ve domain MX doğrulaması"
 )
 @app_commands.checks.cooldown(1, 5.0)
 async def email_search(interaction: discord.Interaction, email: str):
@@ -336,7 +356,7 @@ async def email_search(interaction: discord.Interaction, email: str):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-# ==================== EMAILFINDER (Domain Bazlı Taraması) ====================
+# ==================== 4. EMAILFINDER (Domain Bazlı Taraması) ====================
 
 def filter_emails(email_list):
     return [email for email in email_list if not (email.startswith('u0027@') or email.startswith('22@'))]
@@ -415,7 +435,7 @@ async def emailfinder(interaction: discord.Interaction, domain: str):
         bot.is_processing = False
 
 
-# ==================== DISCORD USER LOOKUP ====================
+# ==================== 5. DISCORD USER LOOKUP ====================
 
 @bot.tree.command(name="ara", description="Discord hesap bilgileri")
 @app_commands.checks.cooldown(1, 5.0)
@@ -457,7 +477,7 @@ async def ara(interaction: discord.Interaction, user_id: str):
         await interaction.followup.send("Sorgu başarısız.", ephemeral=True)
 
 
-# ==================== IP LOOKUP ====================
+# ==================== 6. IP LOOKUP ====================
 
 @bot.tree.command(
     name="ip-lookup",
@@ -600,7 +620,7 @@ async def ip_lookup(interaction: discord.Interaction, ip_address: str):
         await interaction.followup.send("IP sorgusu başarısız.", ephemeral=True)
 
 
-# ==================== PHONE LOOKUP ====================
+# ==================== 7. PHONE LOOKUP ====================
 
 PHONE_TYPES = {
     phonenumbers.PhoneNumberType.MOBILE: "Mobil",
@@ -693,7 +713,7 @@ async def phone_lookup(interaction: discord.Interaction, phone_number: str):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-# ==================== USERNAME SCAN ====================
+# ==================== 8. USERNAME SCAN ====================
 
 WMN_URL = (
     "https://raw.githubusercontent.com/"
@@ -850,7 +870,7 @@ async def username_check(interaction: discord.Interaction, username: str):
     await interaction.followup.send(embed=embed)
 
 
-# ==================== DOMAIN (RDAP) ====================
+# ==================== 9. DOMAIN (RDAP) ====================
 
 def rdap_event(data, action):
     for ev in data.get("events", []):
